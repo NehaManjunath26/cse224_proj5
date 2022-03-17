@@ -1,9 +1,10 @@
 package SurfTest
 
 import (
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	"os"
 	"testing"
+
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	//	"time"
 )
 
@@ -17,8 +18,8 @@ func TestSyncTwoClientsSameFileLeaderFailure(t *testing.T) {
 
 	worker1 := InitDirectoryWorker("test0", SRC_PATH)
 	worker2 := InitDirectoryWorker("test1", SRC_PATH)
-	defer worker1.CleanUp()
-	defer worker2.CleanUp()
+	//defer worker1.CleanUp()
+	//defer worker2.CleanUp()
 
 	//clients add different files
 	file1 := "multi_file1.txt"
@@ -27,6 +28,12 @@ func TestSyncTwoClientsSameFileLeaderFailure(t *testing.T) {
 	if err != nil {
 		t.FailNow()
 	}
+	/*
+		TestSyncTwoClientsSameFileLeaderFailure (0.0/3.0)
+		TestSyncTwoClientsFileUpdateLeaderFailure (0.0/3.0)
+		TestRaftRecoverable (0.0/2.0)
+	*/
+
 	err = worker2.AddFile(file2)
 	if err != nil {
 		t.FailNow()

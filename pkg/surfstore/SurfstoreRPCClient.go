@@ -179,7 +179,7 @@ func (surfClient *RPCClient) GetBlockStoreAddr(blockStoreAddr *string) error {
 
 		if err != nil {
 			conn.Close()
-			return err
+			continue
 		}
 
 		*blockStoreAddr = addr.Addr

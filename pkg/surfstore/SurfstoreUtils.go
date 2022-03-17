@@ -1,555 +1,371 @@
 package surfstore
 
 import (
-	"bufio"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"os"
-	"strconv"
-	"strings"
+	"path/filepath"
+	s "strings"
 )
-
-var updatedLocalIndexFile string
 
 // Implement the logic for a client syncing with the server here.
 func ClientSync(client RPCClient) {
+
 	var blockStoreAddr string
 	if err := client.GetBlockStoreAddr(&blockStoreAddr); err != nil {
 		log.Fatal(err)
 	}
 
-	baseDirectoryMap, err1 := createFileInfoMap(client)
-	if err1 != nil {
-		fmt.Println("CLIENT SYNC ERROR: Error while reading base directory contents ", err1)
-		return
-	}
-
-	localIndexMap, err2 := readLocalIndexFile(client)
-	if err2 != nil {
-		fmt.Println("CLIENT SYNC ERROR: Error while reading local Index File ", err2)
-		return
-	}
-
-	newFiles, deletedFiles, modifiedFiles := compareBaseAndLocal(baseDirectoryMap, localIndexMap)
-
-	var serverFileInfoMap map[string]*FileMetaData
-	err3 := client.GetFileInfoMap(&serverFileInfoMap)
-	if err3 != nil {
-		fmt.Println("CLIENT SYNC ERROR: Error while fetching remote Index File ", err3)
-		return
-	}
-
-	for fileName, fileMetaDataObj := range serverFileInfoMap {
-		if Contains(newFiles, fileName) {
-			err4 := downloadFromServerAndWrite(client, fileMetaDataObj.Filename, baseDirectoryMap[fileName].BlockHashList, fileMetaDataObj.BlockHashList, blockStoreAddr)
-			if err4 != nil {
-				fmt.Println("CLIENT SYNC ERROR: Error while downloading and writing file blocks ", err4)
-				return
-			}
-			updatedLocalIndexFile += fileName + "," + strconv.Itoa(int(fileMetaDataObj.Version)) + "," + strings.Join(fileMetaDataObj.BlockHashList, " ") + "\n"
-		} else if Contains(deletedFiles, fileName) {
-			if fileMetaDataObj.Version == localIndexMap[fileName].Version {
-				var latestVersion int32
-				var tempMetaDataObj FileMetaData
-				tempMetaDataObj.Filename = fileName
-				tempMetaDataObj.Version = localIndexMap[fileName].Version + 1
-				tempMetaDataObj.BlockHashList = []string{"0"}
-				err4 := client.UpdateFile(&tempMetaDataObj, &latestVersion)
-				if err4 != nil {
-					fmt.Println("CLIENT SYNC ERROR: Error while updating deleted file blocks ", err4)
-					return
-				} else if latestVersion == -1 {
-					var recentRemoteIndexMap map[string]*FileMetaData
-					err4 = client.GetFileInfoMap(&recentRemoteIndexMap)
-					if err4 != nil {
-						fmt.Println("CLIENT SYNC ERROR: Error while fetching recent remote Index File ", err4)
-						return
-					}
-					fileMetaDataObj = recentRemoteIndexMap[fileName]
-					err4 := downloadDeletedFromServer(client, fileName, fileMetaDataObj.BlockHashList, blockStoreAddr)
-					if err4 != nil {
-						fmt.Println("CLIENT SYNC ERROR: Error while downloading and re-creating deleted file blocks ", err4)
-						return
-					}
-					updatedLocalIndexFile += fileName + "," + strconv.Itoa(int(fileMetaDataObj.Version)) + "," + strings.Join(fileMetaDataObj.BlockHashList, " ") + "\n"
-				} else {
-					updatedLocalIndexFile += fileName + "," + strconv.Itoa(int(latestVersion)) + ",0" + "\n"
-				}
-			} else {
-				err4 := downloadDeletedFromServer(client, fileName, fileMetaDataObj.BlockHashList, blockStoreAddr)
-				if err4 != nil {
-					fmt.Println("CLIENT SYNC ERROR: Error while downloading and re-creating deleted file blocks ", err4)
-					return
-				}
-				updatedLocalIndexFile += fileName + "," + strconv.Itoa(int(fileMetaDataObj.Version)) + "," + strings.Join(fileMetaDataObj.BlockHashList, " ") + "\n"
-			}
-		} else if Contains(modifiedFiles, fileName) {
-			if fileMetaDataObj.Version == localIndexMap[fileName].Version {
-				blockHashList, err4 := uploadFile(client, fileName, blockStoreAddr)
-				if err4 != nil {
-					fmt.Println("CLIENT SYNC ERROR: Error while uploading file to server ", err4)
-					return
-				}
-				var latestVersion int32
-				var tempMetaDataObj FileMetaData
-				tempMetaDataObj.Filename = fileName
-				tempMetaDataObj.Version = localIndexMap[fileName].Version + 1
-				tempMetaDataObj.BlockHashList = blockHashList
-				err4 = client.UpdateFile(&tempMetaDataObj, &latestVersion)
-				if err4 != nil {
-					fmt.Println("CLIENT SYNC ERROR: Error while updating modified file blocks ", err4)
-					return
-				} else if latestVersion == -1 {
-					var recentRemoteIndexMap map[string]*FileMetaData
-					err4 = client.GetFileInfoMap(&recentRemoteIndexMap)
-					if err4 != nil {
-						fmt.Println("CLIENT SYNC ERROR: Error while fetching recent remote Index File ", err4)
-						return
-					}
-					fileMetaDataObj = recentRemoteIndexMap[fileName]
-					err4 = downloadFromServerAndWrite(client, fileName, baseDirectoryMap[fileName].BlockHashList, fileMetaDataObj.BlockHashList, blockStoreAddr)
-					if err4 != nil {
-						fmt.Println("CLIENT SYNC ERROR: Error while downloading and writing file blocks ", err4)
-						return
-					}
-					updatedLocalIndexFile += fileName + "," + strconv.Itoa(int(fileMetaDataObj.Version)) + "," + strings.Join(fileMetaDataObj.BlockHashList, " ") + "\n"
-				} else {
-					updatedLocalIndexFile += fileName + "," + strconv.Itoa(int(latestVersion)) + "," + strings.Join(blockHashList, " ") + "\n"
-				}
-			} else {
-				err4 := downloadFromServerAndWrite(client, fileName, baseDirectoryMap[fileName].BlockHashList, fileMetaDataObj.BlockHashList, blockStoreAddr)
-				if err4 != nil {
-					fmt.Println("CLIENT SYNC ERROR: Error while downloading and writing file blocks ", err4)
-					return
-				}
-				updatedLocalIndexFile += fileName + "," + strconv.Itoa(int(fileMetaDataObj.Version)) + "," + strings.Join(fileMetaDataObj.BlockHashList, " ") + "\n"
-			}
-		} else {
-			if _, ok := baseDirectoryMap[fileName]; ok {
-				if fileMetaDataObj.Version == localIndexMap[fileName].Version {
-					updatedLocalIndexFile += fileName + "," + strconv.Itoa(int(fileMetaDataObj.Version)) + "," + strings.Join(fileMetaDataObj.BlockHashList, " ") + "\n"
-					continue
-				}
-				err4 := downloadFromServerAndWrite(client, fileName, baseDirectoryMap[fileName].BlockHashList, fileMetaDataObj.BlockHashList, blockStoreAddr)
-				if err4 != nil {
-					fmt.Println("CLIENT SYNC ERROR: Error while downloading and writing un-modified local file blocks ", err4)
-					return
-				}
-				updatedLocalIndexFile += fileName + "," + strconv.Itoa(int(fileMetaDataObj.Version)) + "," + strings.Join(fileMetaDataObj.BlockHashList, " ") + "\n"
-			} else {
-				err4 := downloadDeletedFromServer(client, fileName, fileMetaDataObj.BlockHashList, blockStoreAddr)
-				if err4 != nil {
-					fmt.Println("CLIENT SYNC ERROR: Error while downloading and creating new local file blocks ", err4)
-					return
-				}
-				updatedLocalIndexFile += fileName + "," + strconv.Itoa(int(fileMetaDataObj.Version)) + "," + strings.Join(fileMetaDataObj.BlockHashList, " ") + "\n"
-			}
-		}
-	}
-
-	for fileName := range baseDirectoryMap {
-		if _, ok := serverFileInfoMap[fileName]; ok {
-			continue
-		}
-		blockHashList, err5 := uploadFile(client, fileName, blockStoreAddr)
-		if err5 != nil {
-			fmt.Println("CLIENT SYNC ERROR: Error while uploading file to server ", err5)
-			return
-		}
-		var latestVersion int32
-		var tempMetaDataObj FileMetaData
-		var fileMetaDataObj FileMetaData
-		tempMetaDataObj.Filename = fileName
-		tempMetaDataObj.Version = 1
-		tempMetaDataObj.BlockHashList = blockHashList
-		err5 = client.UpdateFile(&tempMetaDataObj, &latestVersion)
-		if err5 != nil {
-			fmt.Println("CLIENT SYNC ERROR: Error while updating new baseDir file blocks ", err5)
-			return
-		} else if latestVersion == -1 {
-			var recentRemoteIndexMap map[string]*FileMetaData
-			err5 = client.GetFileInfoMap(&recentRemoteIndexMap)
-			if err5 != nil {
-				fmt.Println("CLIENT SYNC ERROR: Error while fetching recent remote Index File ", err5)
-				return
-			}
-			fileMetaDataObj = *recentRemoteIndexMap[fileName]
-			err5 = downloadFromServerAndWrite(client, fileName, baseDirectoryMap[fileName].BlockHashList, fileMetaDataObj.BlockHashList, blockStoreAddr)
-			if err5 != nil {
-				fmt.Println("CLIENT SYNC ERROR: Error while downloading and writing baseDir file blocks which got recently created in server ", err5)
-				return
-			}
-			updatedLocalIndexFile += fileName + "," + strconv.Itoa(int(fileMetaDataObj.Version)) + "," + strings.Join(fileMetaDataObj.BlockHashList, " ") + "\n"
-		} else {
-			updatedLocalIndexFile += fileName + "," + "1" + "," + strings.Join(blockHashList, " ") + "\n"
-		}
-	}
-
-	indexTxt, err6 := os.OpenFile(client.BaseDir+"/index.txt", os.O_WRONLY, os.ModeAppend)
-	if err6 != nil {
-		indexTxt, err6 = os.Create(client.BaseDir + "/index.txt")
-		if err6 != nil {
-			fmt.Println("CLIENT SYNC ERROR: Error while trying to create a new index.txt file ", err6)
-			return
-		}
-	}
-	err6 = indexTxt.Truncate(0)
-	if err6 != nil {
-		fmt.Println("CLIENT SYNC ERROR: Error while trying to truncate index.txt file for replacing ", err6)
-		indexTxt.Close()
-		return
-	}
-	_, err6 = indexTxt.WriteString(updatedLocalIndexFile)
-	if err6 != nil {
-		fmt.Println("CLIENT SYNC ERROR: Error while overwriting index.txt file ", err6)
-		indexTxt.Close()
-		return
-	}
-	indexTxt.Close()
-}
-
-func createFileInfoMap(client RPCClient) (map[string]FileMetaData, error) {
+	blockSize := client.BlockSize
 	baseDir := client.BaseDir
-	files, err := ioutil.ReadDir(baseDir)
+	// metaAddr := client.MetaStoreAddr
+
+	curr_items, err := ioutil.ReadDir(baseDir)
 	if err != nil {
-		fmt.Println("CLIENT ERROR: Unable to read base directory ", err)
+		log.Panic("Error reading directory")
 	}
 
-	var FileInfoMap map[string]FileMetaData = make(map[string]FileMetaData)
+	localMetaMap := make(map[string][]string) // mapping from files in LFD to hashmaps
 
-	for _, f := range files {
-		fileName := f.Name()
-		if fileName == "index.txt" {
+	// scan local items
+	for _, file := range curr_items {
+		// ignore directory and special file.
+		name := file.Name()
+		if name == DEFAULT_META_FILENAME || file.IsDir() {
 			continue
 		}
-		filesize := int(f.Size())
-		buffer := make([]byte, client.BlockSize)
-		var BlockHashList []string
 
-		file, err := os.Open(baseDir + "/" + fileName)
+		// read file into chunks of blockSize blocks
+		fileHashList := make([]string, 0)
+		nameOpen, _ := filepath.Abs(ConcatPath(baseDir, name))
+		fh, err := os.Open(nameOpen)
 		if err != nil {
-			fmt.Println("CLIENT ERROR: Error while opening file ", err)
-			return nil, err
+			log.Panicf("error reading file %v: %v", nameOpen, err)
 		}
 
-		for i := 0; i < filesize/client.BlockSize; i++ {
-			_, err := file.Read(buffer)
-			if err != nil {
-				if err != io.EOF {
-					fmt.Println("CLIENT ERROR: Error while reading file ", err)
-					return nil, err
-				}
+		for {
+			fileContent := make([]byte, blockSize)
+			readBytes, err := fh.Read(fileContent)
+			fileContent = fileContent[:readBytes]
+			if err != nil || readBytes == 0 {
+				break
 			}
-			fileHash, err := ComputeHash(buffer)
-			if err != nil {
-				fmt.Println("CLIENT ERROR: Error while computing hash for file block ", err)
-				return nil, err
-			}
-			BlockHashList = append(BlockHashList, fileHash)
+			blockhash := GetBlockHashString(fileContent)
+			fileHashList = append(fileHashList, blockhash)
 		}
-		remaining := filesize % client.BlockSize
-		if remaining > 0 {
-			buffer = make([]byte, remaining)
-			_, err := file.Read(buffer)
-			if err != nil {
-				if err != io.EOF {
-					fmt.Println("CLIENT ERROR: Error while reading file's last block ", err)
-					return nil, err
-				}
-			}
-			fileHash, err := ComputeHash(buffer)
-			if err != nil {
-				fmt.Println("CLIENT ERROR: Error while computing hash for file's last block ", err)
-				return nil, err
-			}
-			BlockHashList = append(BlockHashList, fileHash)
-		}
-		var fileMetaDataObj FileMetaData
-		fileMetaDataObj.Filename = fileName
-		fileMetaDataObj.Version = -1
-		fileMetaDataObj.BlockHashList = BlockHashList
-		FileInfoMap[fileName] = fileMetaDataObj
-		file.Close()
+		localMetaMap[name] = fileHashList
 	}
-	return FileInfoMap, nil
+
+	metaFilePath, _ := filepath.Abs(ConcatPath(baseDir, DEFAULT_META_FILENAME))
+	if _, err := os.Stat(metaFilePath); err != nil {
+		// if index.txt is not there, create it
+		fh, err := os.Create(metaFilePath)
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			fh.Close()
+		}
+	}
+
+	// scan the index file
+	indexMetaMap, err := LoadMetaFromMetaFile(baseDir)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	for fileName, localHashList := range localMetaMap {
+		indexMetaData, ok := indexMetaMap[fileName]
+		if !ok {
+			// case 3:
+			// there in currrent directory, not there in index
+			// created in current directory, create in index
+			newFileMetaData := &FileMetaData{
+				Filename:      fileName,
+				Version:       1,
+				BlockHashList: localHashList,
+			}
+			indexMetaMap[fileName] = newFileMetaData
+		} else {
+			// there in current directory, there in index
+			// check if hashes are same
+			if !isEqual(indexMetaData.BlockHashList, localHashList) {
+				// Case 2:
+				// file modified in local.
+				// update the file in index
+				indexMetaMap[fileName].Version += 1
+				indexMetaMap[fileName].BlockHashList = localHashList
+			} else {
+				// Case 1:
+				// nothing to do
+				continue
+			}
+		}
+	}
+
+	tombStone := make([]string, 0)
+	tombStone = append(tombStone, "0")
+	for fileName := range indexMetaMap {
+		// check if file is not in local.
+		_, ok := localMetaMap[fileName]
+		if !ok {
+			// Case 4:
+			// deleted from local
+			indexMetaMap[fileName].BlockHashList = tombStone
+			indexMetaMap[fileName].Version += 1
+		} else {
+			// Case 5:
+			// already handled above
+			continue
+		}
+	}
+
+	// sync indexMap to metaFilefoMap
+	// put block which aren't there in blockStore <-> updateFileInfo
+	// getBlocks which aren't there in local <-> update indexMetaMap
+	// handle conflicts
+
+	// get remote file info map.
+	remoteMetaMap := make(map[string]*FileMetaData)
+	if err := client.GetFileInfoMap(&remoteMetaMap); err != nil {
+		log.Fatal(err)
+	}
+
+	for fileName := range remoteMetaMap {
+		indexMetaData, ok := indexMetaMap[fileName]
+		if !ok {
+			// file there in server, not in index.
+			// update indexMap with this new entry <-> and also get blocks in local.
+			indexMetaMap[fileName] = remoteMetaMap[fileName]
+			// TODO: get blocks from remote server to filename
+			if !isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
+				// Case 1:
+				// only write if remote file is not deleted.
+				if err := getBlocksAndWriteToFile(remoteMetaMap[fileName], blockStoreAddr, &client); err != nil {
+					log.Panic("error: ", err)
+				}
+			}
+		} else if !isEqual(indexMetaData.BlockHashList, remoteMetaMap[fileName].BlockHashList) {
+			// file modified in either local or remote.
+			if indexMetaData.Version == remoteMetaMap[fileName].Version+1 {
+				// if current version is equal to remote version+1, then push the changes <-> also put blocks in remote
+
+				PutfileName, _ := filepath.Abs(ConcatPath(baseDir, fileName))
+				if _, err := os.Stat(PutfileName); err == nil {
+					// Case 4:
+					// remote update is successful.
+					// put blocks from fileName to remote server if the update is not delete
+					localHashMap, hashesIn, err_get := getHashFromFile(fileName, int32(blockSize), baseDir)
+					if err_get != nil {
+						log.Panic("error", err)
+					}
+					hashesOut := make([]string, 0)
+					if err := client.HasBlocks(hashesIn, blockStoreAddr, &hashesOut); err != nil {
+						log.Panic("error", err)
+					}
+
+					succ := new(bool)
+					for _, notHash := range hashesOut {
+						if err := client.PutBlock(localHashMap[notHash], blockStoreAddr, succ); err != nil {
+							log.Panic("error", err)
+						}
+					}
+				}
+
+				newVersion := new(int32)
+				if err := client.UpdateFile(indexMetaData, newVersion); err != nil {
+					fmt.Println(err)
+				}
+
+				if *newVersion == -1 {
+					// remote update is unseccessful - file in remote is a higher version.
+					indexMetaMap[fileName] = remoteMetaMap[fileName]
+
+					if !isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
+						// Case 6:
+						if err := getBlocksAndWriteToFile(remoteMetaMap[fileName], blockStoreAddr, &client); err != nil {
+							log.Panic("error: ", err)
+						}
+					} else if isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
+						// Case 5:
+						// file is deleted in remote.
+						// copy the tombstone entry
+						indexMetaMap[fileName] = remoteMetaMap[fileName]
+						// delete the file
+						delFile, _ := filepath.Abs(ConcatPath(baseDir, fileName))
+						if err := os.Remove(delFile); err != nil {
+							log.Panic("error:", err)
+						}
+					}
+				}
+			} else if remoteMetaMap[fileName].Version+1 > indexMetaData.Version {
+				// if remote has a higher version number, update the local file and version number.
+				indexMetaMap[fileName] = remoteMetaMap[fileName]
+
+				// TODO: get blocks corresponding to this fileName from server.
+				if !isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
+					// Case 8:
+					if err := getBlocksAndWriteToFile(remoteMetaMap[fileName], blockStoreAddr, &client); err != nil {
+						log.Panic("error: ", err)
+					}
+				} else if isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
+					// Case 7:
+					// file is deleted in remote.
+					// copy the tombstone entry
+					indexMetaMap[fileName] = remoteMetaMap[fileName]
+					delFile, _ := filepath.Abs(ConcatPath(baseDir, fileName))
+					// delete the file
+					if err := os.Remove(delFile); err != nil {
+						log.Panic("error:", err)
+					}
+				}
+			}
+		} else if indexMetaData.Version != remoteMetaMap[fileName].Version {
+			// Case 10:
+			indexMetaMap[fileName].Version = remoteMetaMap[fileName].Version
+		}
+
+	}
+
+	for fileName := range indexMetaMap {
+		if fileName == DEFAULT_META_FILENAME {
+			continue
+		}
+		_, ok := remoteMetaMap[fileName]
+		if !ok {
+			// put blocks from fileName to remote server if the update is not delete
+			PutfileName, _ := filepath.Abs(ConcatPath(baseDir, fileName))
+			if _, err := os.Stat(PutfileName); err == nil {
+				// case 1a
+				localHashMap, hashesIn, err := getHashFromFile(fileName, int32(blockSize), baseDir)
+				if err != nil {
+					log.Panic("error", err)
+				}
+				hashesPut := make([]string, 0)
+				if err := client.HasBlocks(hashesIn, blockStoreAddr, &hashesPut); err != nil {
+					log.Panic("error", err)
+				}
+
+				succ := new(bool)
+				for _, notHash := range hashesPut {
+					if err := client.PutBlock(localHashMap[notHash], blockStoreAddr, succ); err != nil {
+						log.Panic("error", err)
+					}
+				}
+			}
+			newVersion := new(int32)
+			if err := client.UpdateFile(indexMetaMap[fileName], newVersion); err != nil {
+				fmt.Println(err)
+			}
+			if *newVersion == -1 {
+				// case 1b:
+				// remote update is unseccessful - file in remote is a higher version.
+				indexMetaMap[fileName] = remoteMetaMap[fileName]
+
+				if !isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
+					// Case 2b
+					if err := getBlocksAndWriteToFile(remoteMetaMap[fileName], blockStoreAddr, &client); err != nil {
+						log.Panic("error: ", err)
+					}
+				} else if isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
+					// Case 2a:
+					// file is deleted in remote.
+					// copy the tombstone entry
+					indexMetaMap[fileName] = remoteMetaMap[fileName]
+					// delete the file
+					delFile, _ := filepath.Abs(ConcatPath(baseDir, fileName))
+					if err := os.Remove(delFile); err != nil {
+						log.Panic("error:", err)
+					}
+				}
+			}
+		} else {
+			// handled above
+			continue
+		}
+	}
+
+	if err := WriteMetaFile(indexMetaMap, baseDir); err != nil {
+		log.Panic("error", err)
+	}
+
+	// Debug: print remote file info after sync
+	// get remote file info map.
+	// remoteMetaMap = make(map[string]*FileMetaData)
+	// if err := client.GetFileInfoMap(&remoteMetaMap); err != nil {
+	// 	log.Fatal(err)
+	// }
+	// PrintMetaMap(remoteMetaMap)
 }
 
-func readLocalIndexFile(client RPCClient) (map[string]FileMetaData, error) {
-	file, err := os.Open(client.BaseDir + "/index.txt")
+func isEqual(str1, str2 []string) bool {
+	return s.Join(str1, "") == s.Join(str2, "")
+}
+
+func getHashFromFile(fileName string, blockSize int32, baseDir string) (map[string]*Block, []string, error) {
+	// convert file contents into a mapping between hashes and blocks
+	localHashMap := make(map[string]*Block)
+	// log.Println("FileName:", fileName)
+	fileName, _ = filepath.Abs(ConcatPath(baseDir, fileName))
+	fh, err := os.Open(fileName)
 	if err != nil {
-		if os.IsNotExist(err) {
-			emptyFile, err1 := os.Create(client.BaseDir + "/index.txt")
-			if err1 != nil {
-				fmt.Println("CLIENT ERROR: Error while creating empty index file ", err)
-				return nil, err1
-			}
-			emptyFile.Close()
-			return nil, nil
-		}
-		fmt.Println("CLIENT ERROR: Error while opening index file ", err)
-		return nil, err
+		log.Printf("Error reading file %v: %v", fileName, err)
+		return nil, nil, err
 	}
-	var FileInfoMap map[string]FileMetaData = make(map[string]FileMetaData)
-	reader := bufio.NewReader(file)
-	var line string
+
+	localHashList := make([]string, 0)
+
+	// fmt.Print("FileName: ", fileName)
+
 	for {
-		line, err = reader.ReadString('\n')
-		if (err != nil && err != io.EOF) || len(line) == 0 {
+		fileContent := make([]byte, blockSize)
+		readBytes, err := fh.Read(fileContent)
+		fileContent = fileContent[:readBytes]
+		if err != nil || readBytes == 0 {
 			break
 		}
-		line = strings.Replace(line, "\n", "", -1)
-		line = strings.TrimSpace(line)
-		elements := strings.Split(line, ",")
-		var fileMetaDataObj FileMetaData
-		fileMetaDataObj.Filename = elements[0]
-		v, _ := strconv.Atoi(elements[1])
-		fileMetaDataObj.Version = int32(v)
-		fileMetaDataObj.BlockHashList = strings.Split(elements[2], " ")
-		FileInfoMap[elements[0]] = fileMetaDataObj
+		blockhash := GetBlockHashString(fileContent)
+		localHashList = append(localHashList, blockhash)
+		localHashMap[blockhash] = &Block{
+			BlockData: fileContent,
+			BlockSize: int32(readBytes),
+		}
 	}
-	file.Close()
-	if len(FileInfoMap) == 0 {
-		return nil, nil
-	}
-	return FileInfoMap, nil
+
+	return localHashMap, localHashList, nil
 }
 
-func compareBaseAndLocal(baseDirectoryMap map[string]FileMetaData, localIndexMap map[string]FileMetaData) ([]string, []string, []string) {
-	var newFiles []string
-	var deletedFiles []string
-	var modifiedFiles []string
+func getBlocksAndWriteToFile(remoteMetaData *FileMetaData, blockStoreAddr string, client *RPCClient) error {
+	// cases 1 and 2.
+	// first get the hashlist corresponding to the entry.
+	// next, iterate through the hashlist and get block for each hash.
+	// while doing this, write the bytes to a file in sizes given by getBlock.
 
-	if len(baseDirectoryMap) == 0 && len(localIndexMap) == 0 {
-		return nil, nil, nil
-	}
-	if len(baseDirectoryMap) == 0 {
-		deletedFiles = getKeys(localIndexMap)
-		return nil, deletedFiles, nil
-	}
-	if len(localIndexMap) == 0 {
-		newFiles = getKeys(baseDirectoryMap)
-		return newFiles, nil, nil
-	}
+	filename := remoteMetaData.Filename
+	filename, _ = filepath.Abs(ConcatPath(client.BaseDir, filename))
 
-	for fileName := range baseDirectoryMap {
-		if file, ok := localIndexMap[fileName]; ok {
-			hashListBaseDir := baseDirectoryMap[fileName].BlockHashList
-			hashListLocalIndex := file.BlockHashList
-			if !isEquals(hashListBaseDir, hashListLocalIndex) {
-				modifiedFiles = append(modifiedFiles, fileName)
-			}
-		} else {
-			newFiles = append(newFiles, fileName)
+	// first create file if it isn't there.
+	// log.Println("Creating file:", filename)
+	fh, err_create := os.Create(filename)
+	if err_create != nil {
+		return err_create
+	}
+	defer fh.Close()
+
+	// now get hashlist for this entry.
+	hashList := remoteMetaData.BlockHashList
+
+	for _, hashValue := range hashList {
+		blockReturn := &Block{}
+		if err := client.GetBlock(hashValue, blockStoreAddr, blockReturn); err != nil {
+			return err
 		}
-	}
 
-	for fileName := range localIndexMap {
-		if _, ok := baseDirectoryMap[fileName]; ok {
-
-		} else if localIndexMap[fileName].BlockHashList[0] != "0" {
-			deletedFiles = append(deletedFiles, fileName)
-		}
-	}
-
-	return newFiles, deletedFiles, modifiedFiles
-}
-
-func uploadFile(client RPCClient, fileName string, blockStoreAddr string) ([]string, error) {
-	file, err := os.Open(client.BaseDir + "/" + fileName)
-	if err != nil {
-		fmt.Println("CLIENT ERROR: Error while opening file in base dir", err)
-		return nil, err
-	}
-	fi, err := file.Stat()
-	if err != nil {
-		fmt.Println("CLIENT ERROR: Error while doing stat for file in base dir", err)
-		return nil, err
-	}
-	BufferSize := client.BlockSize
-	filesize := int(fi.Size())
-	buffer := make([]byte, BufferSize)
-	var block Block
-	var succ bool
-	var blockHashList []string
-	for i := 0; i < filesize/BufferSize; i++ {
-		_, err := file.Read(buffer)
+		_, err := fh.Write(blockReturn.BlockData)
 		if err != nil {
-			if err != io.EOF {
-				fmt.Println("CLIENT ERROR: Error while reading file into the buffer ", err)
-				file.Close()
-				return nil, err
-			}
-		}
-		block.BlockData = buffer
-		block.BlockSize = int32(BufferSize)
-		blockHash, _ := ComputeHash(buffer)
-		blockHashList = append(blockHashList, blockHash)
-		err = client.PutBlock(&block, blockStoreAddr, &succ)
-		if err != nil {
-			fmt.Println("CLIENT ERROR: Error while putting block to the server ", err)
-			file.Close()
-			return nil, err
-		}
-	}
-	buffer = make([]byte, filesize%BufferSize)
-	_, err = file.Read(buffer)
-	if err != nil {
-		if err != io.EOF {
-			fmt.Println("CLIENT ERROR: Error while reading file's last block into the buffer ", err)
-			file.Close()
-			return nil, err
-		}
-		file.Close()
-		return blockHashList, nil
-	}
-	block.BlockData = buffer
-	block.BlockSize = int32(filesize % BufferSize)
-	blockHash, _ := ComputeHash(buffer)
-	blockHashList = append(blockHashList, blockHash)
-	err = client.PutBlock(&block, blockStoreAddr, &succ)
-	if err != nil {
-		fmt.Println("CLIENT ERROR: Error while putting block to the server ", err)
-		file.Close()
-		return nil, err
-	}
-	file.Close()
-	return blockHashList, nil
-}
-
-func downloadDeletedFromServer(client RPCClient, fileName string, remoteBlockHashList []string, blockStoreAddr string) error {
-	if len(remoteBlockHashList) == 1 && remoteBlockHashList[0] == "0" {
-		return nil
-	}
-
-	file, err := os.Create(client.BaseDir + "/" + fileName)
-	if err != nil {
-		fmt.Println("CLIENT ERROR: Error while re-creating deleted file in base dir ", err)
-		return err
-	}
-	var block Block
-	for i := 0; i < len(remoteBlockHashList); i++ {
-		rBlockHash := remoteBlockHashList[i]
-		client.GetBlock(rBlockHash, blockStoreAddr, &block)
-		offset := int64(client.BlockSize * i)
-		_, err = file.WriteAt(block.BlockData, offset)
-		if err != nil {
-			fmt.Println("CLIENT ERROR: Error while writing file block in base dir", err)
-			file.Close()
 			return err
 		}
 	}
-	file.Close()
+
 	return nil
-}
-
-func downloadFromServerAndWrite(client RPCClient, fileName string,
-	baseDirBlockHashList []string, remoteBlockHashList []string, blockStoreAddr string) error {
-	if len(remoteBlockHashList) == 1 && remoteBlockHashList[0] == "0" {
-		err := os.Remove(client.BaseDir + "/" + fileName)
-		if err != nil {
-			fmt.Println("CLIENT ERROR: Error while deleting the (tombstone)file in base dir ", err)
-			return err
-		}
-		return nil
-	}
-
-	file, err := os.OpenFile(client.BaseDir+"/"+fileName, os.O_WRONLY, os.ModeAppend)
-	if err != nil {
-		fmt.Println("CLIENT ERROR: Error while opening file in base dir", err)
-		return err
-	}
-
-	minLen := -1
-	truncateFile := false
-	var block Block
-	var i int
-	if len(baseDirBlockHashList) >= len(remoteBlockHashList) {
-		truncateFile = true
-		minLen = len(remoteBlockHashList)
-	} else {
-		minLen = len(baseDirBlockHashList)
-	}
-	for i = 0; i < minLen; i++ {
-		rBlockHash := remoteBlockHashList[i]
-		bBlockHash := baseDirBlockHashList[i]
-		if rBlockHash != bBlockHash {
-			client.GetBlock(rBlockHash, blockStoreAddr, &block)
-			offset := int64(client.BlockSize * i)
-			_, err = file.WriteAt(block.BlockData, offset)
-			if err != nil {
-				fmt.Println("CLIENT ERROR: Error while writing file block in base dir", err)
-				file.Close()
-				return err
-			}
-		}
-	}
-	if truncateFile {
-		offset := int64((i-1)*client.BlockSize + int(block.BlockSize))
-		err = os.Truncate(client.BaseDir+"/"+fileName, offset)
-		if err != nil {
-			fmt.Println("CLIENT ERROR: Error while truncating file's last block in base dir", err)
-			file.Close()
-			return err
-		}
-		file.Close()
-		return nil
-	}
-	for j := i; j < len(remoteBlockHashList); j++ {
-		rBlockHash := remoteBlockHashList[j]
-		client.GetBlock(rBlockHash, blockStoreAddr, &block)
-		offset := int64(client.BlockSize * j)
-		_, err = file.WriteAt(block.BlockData, offset)
-		if err != nil {
-			fmt.Println("CLIENT ERROR: Error while writing additional file block in base dir", err)
-			file.Close()
-			return err
-		}
-	}
-	file.Close()
-	return nil
-}
-
-func isEquals(a, b []string) bool {
-	if (a == nil) != (b == nil) {
-		return false
-	}
-
-	if len(a) != len(b) {
-		return false
-	}
-
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-
-	return true
-}
-
-func Contains(list []string, x string) bool {
-	for _, item := range list {
-		if item == x {
-			return true
-		}
-	}
-	return false
-}
-
-func ComputeHash(block []byte) (string, error) {
-	hash := sha256.Sum256(block)
-	sha256_hash := hex.EncodeToString(hash[:])
-	return sha256_hash, nil
-}
-
-func getKeys(data map[string]FileMetaData) []string {
-	keys := make([]string, 0, len(data))
-	for key := range data {
-		keys = append(keys, key)
-	}
-	return keys
 }
