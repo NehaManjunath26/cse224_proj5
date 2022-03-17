@@ -84,7 +84,7 @@ func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty
 				count += 1
 			}
 		}
-		if count > len(s.ipList)/2 {
+		if count >= len(s.ipList)/2 {
 			infoMap, err := s.metaStore.GetFileInfoMap(ctx, empty)
 			if err != nil {
 				return nil, err
@@ -133,7 +133,7 @@ func (s *RaftSurfstore) GetBlockStoreAddr(ctx context.Context, empty *emptypb.Em
 				count += 1
 			}
 		}
-		if count > len(s.ipList)/2 {
+		if count >= len(s.ipList)/2 {
 			blockStoreAddr, err := s.metaStore.GetBlockStoreAddr(ctx, empty)
 			if err != nil {
 				return nil, err
@@ -202,7 +202,7 @@ func (s *RaftSurfstore) attemptReplication() {
 			commitCount++
 		}
 		//Replication on majority is successful, commit on leader
-		if commitCount > len(s.ipList)/2 {
+		if commitCount >= len(s.ipList)/2 {
 			s.pendingCommits[targetIdx] <- true
 			s.commitIndex = targetIdx
 			break
@@ -248,7 +248,12 @@ func (s *RaftSurfstore) commitEntry(serverIdx, entryIdx int64, commitChan chan *
 		output, _ := client.AppendEntries(ctx, input)
 		if output == nil || err != nil {
 			if errors.Is(err, ERR_NOT_LEADER) {
-				s.convertToFollower()
+				s.isLeaderMutex.Lock()
+				defer s.isLeaderMutex.Unlock()
+				if s.isLeader {
+					s.isLeader = false
+					s.nextIndex = make([]int64, len(s.ipList))
+				}
 				break
 			} else {
 				continue
@@ -281,7 +286,12 @@ func (s *RaftSurfstore) commitEntry(serverIdx, entryIdx int64, commitChan chan *
 
 			if output == nil || err != nil {
 				if errors.Is(err, ERR_NOT_LEADER) {
-					s.convertToFollower()
+					s.isLeaderMutex.Lock()
+					defer s.isLeaderMutex.Unlock()
+					if s.isLeader {
+						s.isLeader = false
+						s.nextIndex = make([]int64, len(s.ipList))
+					}
 				}
 				break
 			}
@@ -289,7 +299,12 @@ func (s *RaftSurfstore) commitEntry(serverIdx, entryIdx int64, commitChan chan *
 
 		if output == nil || err != nil {
 			if errors.Is(err, ERR_NOT_LEADER) {
-				s.convertToFollower()
+				s.isLeaderMutex.Lock()
+				defer s.isLeaderMutex.Unlock()
+				if s.isLeader {
+					s.isLeader = false
+					s.nextIndex = make([]int64, len(s.ipList))
+				}
 				break
 			} else {
 				continue
@@ -308,15 +323,6 @@ func (s *RaftSurfstore) commitEntry(serverIdx, entryIdx int64, commitChan chan *
 	}
 }
 
-//1. Reply false if term < currentTerm (§5.1)
-//2. Reply false if log doesn’t contain an entry at prevLogIndex whose term
-//matches prevLogTerm (§5.3)
-//3. If an existing entry conflicts with a new one (same index but different
-//terms), delete the existing entry and all that follow it (§5.3)
-//4. Append any new entries not already in the log
-//5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index
-//of last new entry)
-//Receiver implementation
 func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInput) (*AppendEntryOutput, error) {
 
 	//Check if node has crashed
@@ -331,15 +337,11 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 		MatchedIndex: -1,
 	}
 
-	// 1.
 	if input.Term < s.term {
-		log.Println()
-
 		output.Term = s.term
 		return output, ERR_NOT_LEADER
 	}
 
-	//2.
 	if input.PrevLogIndex > -1 {
 		if len(s.log) > 0 && int64(len(s.log)) > input.PrevLogIndex {
 			if s.log[input.PrevLogIndex].Term != input.PrevLogTerm {
@@ -354,8 +356,6 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 		}
 	}
 
-	//Log matches upto PrevLogIndex
-	//3. 4.
 	if input.Term > s.term {
 		s.term = input.Term
 	}
@@ -366,7 +366,6 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 	}
 	s.log = append(s.log, input.Entries...)
 
-	//5.
 	if input.LeaderCommit > s.commitIndex {
 		s.commitIndex = int64(math.Min(float64(input.LeaderCommit), float64(len(s.log)-1)))
 	}
@@ -417,7 +416,6 @@ func (s *RaftSurfstore) SetLeader(ctx context.Context, _ *emptypb.Empty) (*Succe
 		}
 		client := NewRaftSurfstoreClient(conn)
 
-		//Add for future use
 		s.rpcClients[idx] = client
 	}
 
@@ -446,43 +444,35 @@ func (s *RaftSurfstore) SendHeartbeat(ctx context.Context, _ *emptypb.Empty) (*S
 	s.isLeaderMutex.RUnlock()
 
 	for idx, _ := range s.ipList {
-		if int64(idx) == s.serverId {
-			continue
-		}
-		client := s.rpcClients[idx]
-		err := s.retryAppendEntries(client, idx)
-		if err != nil {
-			break
+		if int64(idx) != s.serverId {
+			client := s.rpcClients[idx]
+			err := s.appendEntriesRetry(client, idx)
+			if err != nil {
+				break
+			}
 		}
 	}
 	return &Success{Flag: true}, nil
 }
 
-func (s *RaftSurfstore) convertToFollower() {
-	s.isLeaderMutex.Lock()
-	defer s.isLeaderMutex.Unlock()
-	if s.isLeader {
-		s.isLeader = false
-		s.nextIndex = make([]int64, len(s.ipList))
-	}
-}
+func (s *RaftSurfstore) appendEntriesRetry(client RaftSurfstoreClient, idx int) error {
+	var previousLogIndex int64 = -1
+	var previousLogTerm int64 = -1
 
-func (s *RaftSurfstore) retryAppendEntries(client RaftSurfstoreClient, idx int) error {
-	var prevLogTerm int64 = -1
-	var prevLogIndex int64 = -1
 	entries := make([]*UpdateOperation, 0)
 
 	if len(s.log) > 0 && int64(len(s.log)) >= s.nextIndex[idx] {
 		if int(s.nextIndex[idx]) > 0 {
-			prevLogTerm = s.log[s.nextIndex[idx]-1].GetTerm()
-			prevLogIndex = s.nextIndex[idx] - 1
+			previousLogTerm = s.log[s.nextIndex[idx]-1].GetTerm()
+			previousLogIndex = s.nextIndex[idx] - 1
 		}
 		entries = s.log[s.nextIndex[idx]:]
 	}
+
 	input := &AppendEntryInput{
 		Term:         s.term,
-		PrevLogTerm:  prevLogTerm,
-		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  previousLogTerm,
+		PrevLogIndex: previousLogIndex,
 		Entries:      entries,
 		LeaderCommit: s.commitIndex,
 	}
@@ -491,27 +481,33 @@ func (s *RaftSurfstore) retryAppendEntries(client RaftSurfstoreClient, idx int) 
 	defer cancel()
 	output, err := client.AppendEntries(ctx, input)
 	if err != nil && strings.Contains(err.Error(), ERR_NOT_LEADER.Error()) {
-		s.convertToFollower()
+		s.isLeaderMutex.Lock()
+		defer s.isLeaderMutex.Unlock()
+		if s.isLeader {
+			s.isLeader = false
+			s.nextIndex = make([]int64, len(s.ipList))
+		}
 		return ERR_NOT_LEADER
 	}
 	if output == nil || err != nil {
 		return nil
 	}
+
 	for !output.Success && s.nextIndex[idx] > 0 {
 		s.nextIndex[idx] -= 1
 		if len(s.log) > 0 {
-			prevLogIndex = s.nextIndex[idx] - 1
-			if prevLogIndex >= 0 {
-				prevLogTerm = s.log[prevLogIndex].GetTerm()
+			previousLogIndex = s.nextIndex[idx] - 1
+			if previousLogIndex < 0 {
+				previousLogTerm = -1
 			} else {
-				prevLogTerm = -1
+				previousLogTerm = s.log[previousLogIndex].GetTerm()
 			}
 			entries = s.log[s.nextIndex[idx]:]
 		}
 		input = &AppendEntryInput{
 			Term:         s.term,
-			PrevLogTerm:  prevLogTerm,
-			PrevLogIndex: prevLogIndex,
+			PrevLogTerm:  previousLogTerm,
+			PrevLogIndex: previousLogTerm,
 			Entries:      entries,
 			LeaderCommit: s.commitIndex,
 		}
@@ -521,11 +517,14 @@ func (s *RaftSurfstore) retryAppendEntries(client RaftSurfstoreClient, idx int) 
 		}
 		s.notCrashedCond.L.Unlock()
 		output, err = client.AppendEntries(ctx, input)
-		log.Println(output)
-		log.Println(err)
 		if output == nil || err != nil {
 			if errors.Is(err, ERR_NOT_LEADER) {
-				s.convertToFollower()
+				s.isLeaderMutex.Lock()
+				defer s.isLeaderMutex.Unlock()
+				if s.isLeader {
+					s.isLeader = false
+					s.nextIndex = make([]int64, len(s.ipList))
+				}
 			}
 			break
 		}
