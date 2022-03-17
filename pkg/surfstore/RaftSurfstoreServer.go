@@ -28,14 +28,14 @@ type RaftSurfstore struct {
 
 	rpcClients []RaftSurfstoreClient
 
-	/*------------ Leader state ---------------*/
-	isLeaderMutex *sync.RWMutex
-	nextIndex     []int64
-
 	/*-------------- Server state ---------------*/
+	serverId int64
 	ip       string
 	ipList   []string
-	serverId int64
+
+	/*------------ Leader state ---------------*/
+	nextIndex     []int64
+	isLeaderMutex *sync.RWMutex
 
 	/*--------------- Chaos Monkey --------------*/
 	isCrashed      bool
@@ -46,13 +46,11 @@ type RaftSurfstore struct {
 }
 
 func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty) (*FileInfoMap, error) {
-	//Check if node has crashed
 	state, _ := s.IsCrashed(ctx, &emptypb.Empty{})
 	if state.IsCrashed {
 		return nil, ERR_SERVER_CRASHED
 	}
 
-	//Check if node is a leader
 	s.isLeaderMutex.RLock()
 	if !s.isLeader {
 		s.isLeaderMutex.RUnlock()
@@ -60,11 +58,10 @@ func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty
 	}
 	s.isLeaderMutex.RUnlock()
 
-	//2. Talk to majority of the servers
 	for {
-		count := 1
-		for idx, ipAddr := range s.ipList {
-			if int64(idx) == s.serverId {
+		c := 1
+		for i, addr := range s.ipList {
+			if int64(i) == s.serverId {
 				continue
 			}
 			input := &AppendEntryInput{
@@ -74,17 +71,17 @@ func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty
 				Entries:      make([]*UpdateOperation, 0),
 				LeaderCommit: s.commitIndex,
 			}
-			conn, err := grpc.Dial(ipAddr, grpc.WithInsecure())
+			conn, err := grpc.Dial(addr, grpc.WithInsecure())
 			if err != nil {
 				log.Fatal("Error connecting to clients ", err)
 			}
 			client := NewRaftSurfstoreClient(conn)
 			output, _ := client.AppendEntries(ctx, input)
 			if output != nil {
-				count += 1
+				c += 1
 			}
 		}
-		if count > len(s.ipList)/2 {
+		if c > len(s.ipList)/2 {
 			infoMap, err := s.metaStore.GetFileInfoMap(ctx, empty)
 			if err != nil {
 				return nil, err
@@ -95,13 +92,11 @@ func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty
 }
 
 func (s *RaftSurfstore) GetBlockStoreAddr(ctx context.Context, empty *emptypb.Empty) (*BlockStoreAddr, error) {
-	//Check if node has crashed
 	state, _ := s.IsCrashed(ctx, &emptypb.Empty{})
 	if state.IsCrashed {
 		return nil, ERR_SERVER_CRASHED
 	}
 
-	//Check if node is a leader
 	s.isLeaderMutex.RLock()
 	if !s.isLeader {
 		s.isLeaderMutex.RUnlock()
@@ -109,11 +104,10 @@ func (s *RaftSurfstore) GetBlockStoreAddr(ctx context.Context, empty *emptypb.Em
 	}
 	s.isLeaderMutex.RUnlock()
 
-	//2. Talk to majority of the servers
 	for {
-		count := 1
-		for idx, ipAddr := range s.ipList {
-			if int64(idx) == s.serverId {
+		c := 1
+		for i, addr := range s.ipList {
+			if int64(i) == s.serverId {
 				continue
 			}
 			input := &AppendEntryInput{
@@ -123,17 +117,17 @@ func (s *RaftSurfstore) GetBlockStoreAddr(ctx context.Context, empty *emptypb.Em
 				Entries:      make([]*UpdateOperation, 0),
 				LeaderCommit: s.commitIndex,
 			}
-			conn, err := grpc.Dial(ipAddr, grpc.WithInsecure())
+			conn, err := grpc.Dial(addr, grpc.WithInsecure())
 			if err != nil {
 				log.Fatal("Error connecting to clients ", err)
 			}
 			client := NewRaftSurfstoreClient(conn)
 			output, _ := client.AppendEntries(ctx, input)
 			if output != nil {
-				count += 1
+				c += 1
 			}
 		}
-		if count > len(s.ipList)/2 {
+		if c > len(s.ipList)/2 {
 			blockStoreAddr, err := s.metaStore.GetBlockStoreAddr(ctx, empty)
 			if err != nil {
 				return nil, err
@@ -144,13 +138,11 @@ func (s *RaftSurfstore) GetBlockStoreAddr(ctx context.Context, empty *emptypb.Em
 }
 
 func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) (*Version, error) {
-	//Check if node has crashed
 	state, _ := s.IsCrashed(ctx, &emptypb.Empty{})
 	if state.IsCrashed {
 		return nil, ERR_SERVER_CRASHED
 	}
 
-	//Check if node is a leader
 	s.isLeaderMutex.RLock()
 	if !s.isLeader {
 		s.isLeaderMutex.RUnlock()
@@ -158,7 +150,6 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 	}
 	s.isLeaderMutex.RUnlock()
 
-	//Add to leader's log
 	op := UpdateOperation{
 		Term:         s.term,
 		FileMetaData: filemeta,
@@ -167,16 +158,13 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 	for idx, _ := range s.nextIndex {
 		s.nextIndex[idx] = int64(len(s.log))
 	}
-	log.Printf("log length of leader is %d", len(s.log))
 
-	//Replicate to followers
 	replicated := make(chan bool)
 	s.pendingCommits = make([]chan bool, s.commitIndex+1)
 	s.pendingCommits = append(s.pendingCommits, replicated)
 
 	go s.attemptReplication()
 
-	//If successfully replicated on majority, then commit on leader and apply to state machine before replying to client
 	success := <-replicated
 	if success {
 		return s.metaStore.UpdateFile(ctx, filemeta)
@@ -316,7 +304,6 @@ func (s *RaftSurfstore) commitEntry(serverIdx, entryIdx int64, commitChan chan *
 			return
 		}
 
-		//Some failure besides crash
 		if !output.Success {
 			break
 		}
