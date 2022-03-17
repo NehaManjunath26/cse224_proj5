@@ -84,7 +84,7 @@ func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty
 				count += 1
 			}
 		}
-		if count >= len(s.ipList)/2 {
+		if count > len(s.ipList)/2 {
 			infoMap, err := s.metaStore.GetFileInfoMap(ctx, empty)
 			if err != nil {
 				return nil, err
@@ -133,7 +133,7 @@ func (s *RaftSurfstore) GetBlockStoreAddr(ctx context.Context, empty *emptypb.Em
 				count += 1
 			}
 		}
-		if count >= len(s.ipList)/2 {
+		if count > len(s.ipList)/2 {
 			blockStoreAddr, err := s.metaStore.GetBlockStoreAddr(ctx, empty)
 			if err != nil {
 				return nil, err
@@ -202,7 +202,7 @@ func (s *RaftSurfstore) attemptReplication() {
 			commitCount++
 		}
 		//Replication on majority is successful, commit on leader
-		if commitCount >= len(s.ipList)/2 {
+		if commitCount > len(s.ipList)/2 {
 			s.pendingCommits[targetIdx] <- true
 			s.commitIndex = targetIdx
 			break
