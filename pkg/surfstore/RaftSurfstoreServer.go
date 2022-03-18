@@ -43,8 +43,8 @@ type RaftSurfstore struct {
 }
 
 func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty) (*FileInfoMap, error) {
-	state, _ := s.IsCrashed(ctx, &emptypb.Empty{})
-	if state.IsCrashed {
+	serverState, _ := s.IsCrashed(ctx, &emptypb.Empty{})
+	if serverState.IsCrashed {
 		return nil, ERR_SERVER_CRASHED
 	}
 
@@ -56,11 +56,44 @@ func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty
 	s.isLeaderMutex.RUnlock()
 
 	for {
-		c := 1
-		for i, addr := range s.ipList {
-			if int64(i) == s.serverId {
-				continue
+		if s.getCount(ctx) > len(s.ipList)/2 {
+			m, err := s.metaStore.GetFileInfoMap(ctx, empty)
+			if err != nil {
+				return nil, err
 			}
+			return m, nil
+		}
+	}
+}
+
+func (s *RaftSurfstore) GetBlockStoreAddr(ctx context.Context, empty *emptypb.Empty) (*BlockStoreAddr, error) {
+	serverState, _ := s.IsCrashed(ctx, &emptypb.Empty{})
+	if serverState.IsCrashed {
+		return nil, ERR_SERVER_CRASHED
+	}
+
+	s.isLeaderMutex.RLock()
+	if !s.isLeader {
+		s.isLeaderMutex.RUnlock()
+		return nil, ERR_NOT_LEADER
+	}
+	s.isLeaderMutex.RUnlock()
+
+	for {
+		if s.getCount(ctx) > len(s.ipList)/2 {
+			blkAdr, err := s.metaStore.GetBlockStoreAddr(ctx, empty)
+			if err != nil {
+				return nil, err
+			}
+			return blkAdr, nil
+		}
+	}
+}
+
+func (s *RaftSurfstore) getCount(ctx context.Context) int {
+	c := 1
+	for i, addr := range s.ipList {
+		if int64(i) != s.serverId {
 			appendIp := &AppendEntryInput{
 				Entries:      make([]*UpdateOperation, 0),
 				LeaderCommit: s.commitIndex,
@@ -72,66 +105,14 @@ func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty
 			if err != nil {
 				log.Fatal("Error connecting to clients ", err)
 			}
-			client := NewRaftSurfstoreClient(conn)
-			output, _ := client.AppendEntries(ctx, appendIp)
-			if output != nil {
+			surfStrClient := NewRaftSurfstoreClient(conn)
+			appendOp, _ := surfStrClient.AppendEntries(ctx, appendIp)
+			if appendOp != nil {
 				c += 1
 			}
 		}
-		if c > len(s.ipList)/2 {
-			infoMap, err := s.metaStore.GetFileInfoMap(ctx, empty)
-			if err != nil {
-				return nil, err
-			}
-			return infoMap, nil
-		}
 	}
-}
-
-func (s *RaftSurfstore) GetBlockStoreAddr(ctx context.Context, empty *emptypb.Empty) (*BlockStoreAddr, error) {
-	state, _ := s.IsCrashed(ctx, &emptypb.Empty{})
-	if state.IsCrashed {
-		return nil, ERR_SERVER_CRASHED
-	}
-
-	s.isLeaderMutex.RLock()
-	if !s.isLeader {
-		s.isLeaderMutex.RUnlock()
-		return nil, ERR_NOT_LEADER
-	}
-	s.isLeaderMutex.RUnlock()
-
-	for {
-		c := 1
-		for i, addr := range s.ipList {
-			if int64(i) == s.serverId {
-				continue
-			}
-			input := &AppendEntryInput{
-				Term:         s.term,
-				PrevLogTerm:  -1,
-				PrevLogIndex: -1,
-				Entries:      make([]*UpdateOperation, 0),
-				LeaderCommit: s.commitIndex,
-			}
-			conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			if err != nil {
-				log.Fatal("Error connecting to clients ", err)
-			}
-			client := NewRaftSurfstoreClient(conn)
-			output, _ := client.AppendEntries(ctx, input)
-			if output != nil {
-				c += 1
-			}
-		}
-		if c > len(s.ipList)/2 {
-			blockStoreAddr, err := s.metaStore.GetBlockStoreAddr(ctx, empty)
-			if err != nil {
-				return nil, err
-			}
-			return blockStoreAddr, nil
-		}
-	}
+	return c
 }
 
 func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) (*Version, error) {
