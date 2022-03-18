@@ -160,31 +160,27 @@ func (s *RaftSurfstore) commitEntry(serverIdx, entryIdx int64, commitChan chan *
 		}
 		var previousLogIndex int64 = -1
 		var previousLogTerm int64 = -1
-		entries := make([]*UpdateOperation, 0)
+		ent := make([]*UpdateOperation, 0)
 		client := NewRaftSurfstoreClient(conn)
-
 		if len(s.log) > 0 && int64(len(s.log)) >= s.nextIndex[serverIdx] {
 			if int(s.nextIndex[serverIdx]) > 0 {
 				previousLogTerm = s.log[s.nextIndex[serverIdx]-1].GetTerm()
 				previousLogIndex = s.nextIndex[serverIdx] - 1
 			}
-			entries = s.log[s.nextIndex[serverIdx]:]
+			ent = s.log[s.nextIndex[serverIdx]:]
 		}
-
 		appendEntryInput := &AppendEntryInput{
 			Term:         s.term,
 			PrevLogTerm:  previousLogTerm,
 			PrevLogIndex: previousLogIndex,
-			Entries:      entries,
+			Entries:      ent,
 			LeaderCommit: s.commitIndex,
 		}
-
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		if s.isCrashed {
 			return
 		}
-
 		appendEntryOutput, _ := client.AppendEntries(ctx, appendEntryInput)
 		if appendEntryOutput == nil || err != nil {
 			if errors.Is(err, ERR_NOT_LEADER) {
@@ -199,7 +195,6 @@ func (s *RaftSurfstore) commitEntry(serverIdx, entryIdx int64, commitChan chan *
 				continue
 			}
 		}
-
 		for !appendEntryOutput.Success && s.nextIndex[serverIdx] > 0 {
 			s.nextIndex[serverIdx] -= 1
 			if len(s.log) > 0 {
@@ -209,21 +204,19 @@ func (s *RaftSurfstore) commitEntry(serverIdx, entryIdx int64, commitChan chan *
 				} else {
 					previousLogTerm = -1
 				}
-				entries = s.log[s.nextIndex[serverIdx]:]
+				ent = s.log[s.nextIndex[serverIdx]:]
 			}
 			appendEntryInput = &AppendEntryInput{
 				Term:         s.term,
 				PrevLogTerm:  previousLogTerm,
 				PrevLogIndex: previousLogIndex,
-				Entries:      entries,
+				Entries:      ent,
 				LeaderCommit: s.commitIndex,
 			}
 			if s.isCrashed {
 				return
 			}
-
 			appendEntryOutput, err = client.AppendEntries(ctx, appendEntryInput)
-
 			if appendEntryOutput == nil || err != nil {
 				if errors.Is(err, ERR_NOT_LEADER) {
 					s.isLeaderMutex.Lock()
@@ -236,7 +229,6 @@ func (s *RaftSurfstore) commitEntry(serverIdx, entryIdx int64, commitChan chan *
 				break
 			}
 		}
-
 		if appendEntryOutput == nil || err != nil {
 			if !errors.Is(err, ERR_NOT_LEADER) {
 				continue
@@ -250,7 +242,6 @@ func (s *RaftSurfstore) commitEntry(serverIdx, entryIdx int64, commitChan chan *
 				break
 			}
 		}
-
 		if appendEntryOutput.Success {
 			s.nextIndex[serverIdx] = appendEntryOutput.MatchedIndex + 1
 			commitChan <- appendEntryOutput
