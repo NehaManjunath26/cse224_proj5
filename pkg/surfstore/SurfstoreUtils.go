@@ -11,50 +11,47 @@ import (
 
 // Implement the logic for a client syncing with the server here.
 func ClientSync(client RPCClient) {
-
 	var addr string
 	if err := client.GetBlockStoreAddr(&addr); err != nil {
 		log.Fatal(err)
 	}
-	baseDir := client.BaseDir
-	blockSize := client.BlockSize
+	baseDirectory := client.BaseDir
+	lMap := make(map[string][]string)
+	blkSz := client.BlockSize
 
-	current, err := ioutil.ReadDir(baseDir)
+	cur, err := ioutil.ReadDir(baseDirectory)
 	if err != nil {
-		log.Panic("Error reading directory")
+		log.Panic("err : read dir")
 	}
-
-	localMap := make(map[string][]string)
-
-	for _, file := range current {
+	for _, file := range cur {
 		name := file.Name()
 		if name == DEFAULT_META_FILENAME || file.IsDir() {
 			continue
 		}
 
-		fileHashList := make([]string, 0)
-		nameOpen, _ := filepath.Abs(ConcatPath(baseDir, name))
-		fh, err := os.Open(nameOpen)
+		fhl := make([]string, 0)
+		nameOp, _ := filepath.Abs(ConcatPath(baseDirectory, name))
+		fh, err := os.Open(nameOp)
 		if err != nil {
-			log.Panicf("error reading file %v: %v", nameOpen, err)
+			log.Panicf("err : read file %v: %v", nameOp, err)
 		}
 
 		for {
-			fileContent := make([]byte, blockSize)
-			readBytes, err := fh.Read(fileContent)
-			fileContent = fileContent[:readBytes]
-			if err != nil || readBytes == 0 {
+			content := make([]byte, blkSz)
+			rb, err := fh.Read(content)
+			content = content[:rb]
+			if err != nil || rb == 0 {
 				break
 			}
-			blockhash := GetBlockHashString(fileContent)
-			fileHashList = append(fileHashList, blockhash)
+			blkHash := GetBlockHashString(content)
+			fhl = append(fhl, blkHash)
 		}
-		localMap[name] = fileHashList
+		lMap[name] = fhl
 	}
 
-	metaFilePath, _ := filepath.Abs(ConcatPath(baseDir, DEFAULT_META_FILENAME))
-	if _, err := os.Stat(metaFilePath); err != nil {
-		fh, err := os.Create(metaFilePath)
+	metaPath, _ := filepath.Abs(ConcatPath(baseDirectory, DEFAULT_META_FILENAME))
+	if _, err := os.Stat(metaPath); err != nil {
+		fh, err := os.Create(metaPath)
 		if err != nil {
 			fmt.Println(err)
 		} else {
@@ -62,61 +59,59 @@ func ClientSync(client RPCClient) {
 		}
 	}
 
-	indexMap, err := LoadMetaFromMetaFile(baseDir)
+	idxMap, err := LoadMetaFromMetaFile(baseDirectory)
 	if err != nil {
 		fmt.Println(err)
 	}
-
-	for fileName, localHashList := range localMap {
-		indexMetaData, ok := indexMap[fileName]
+	for fName, localList := range lMap {
+		idxdata, ok := idxMap[fName]
 		if !ok {
 			newFileMetaData := &FileMetaData{
-				Filename:      fileName,
+				Filename:      fName,
 				Version:       1,
-				BlockHashList: localHashList,
+				BlockHashList: localList,
 			}
-			indexMap[fileName] = newFileMetaData
+			idxMap[fName] = newFileMetaData
 		} else {
-			if !isEqual(indexMetaData.BlockHashList, localHashList) {
-				indexMap[fileName].Version += 1
-				indexMap[fileName].BlockHashList = localHashList
+			if !isEqual(idxdata.BlockHashList, localList) {
+				idxMap[fName].Version += 1
+				idxMap[fName].BlockHashList = localList
 			} else {
 				continue
 			}
 		}
 	}
-
-	tombStone := make([]string, 0)
-	tombStone = append(tombStone, "0")
-	for fileName := range indexMap {
-		_, ok := localMap[fileName]
+	ts := make([]string, 0)
+	ts = append(ts, "0")
+	for fName := range idxMap {
+		_, ok := lMap[fName]
 		if !ok {
-			indexMap[fileName].BlockHashList = tombStone
-			indexMap[fileName].Version += 1
+			idxMap[fName].BlockHashList = ts
+			idxMap[fName].Version += 1
 		} else {
 			continue
 		}
 	}
 
-	remoteMetaMap := make(map[string]*FileMetaData)
-	if err := client.GetFileInfoMap(&remoteMetaMap); err != nil {
+	rMetaMap := make(map[string]*FileMetaData)
+	if err := client.GetFileInfoMap(&rMetaMap); err != nil {
 		log.Fatal(err)
 	}
 
-	for fileName := range remoteMetaMap {
-		indexMetaData, ok := indexMap[fileName]
+	for fileName := range rMetaMap {
+		idxMData, ok := idxMap[fileName]
 		if !ok {
-			indexMap[fileName] = remoteMetaMap[fileName]
-			if !isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
-				if err := getBlocksAndWriteToFile(remoteMetaMap[fileName], addr, &client); err != nil {
+			idxMap[fileName] = rMetaMap[fileName]
+			if !isEqual(rMetaMap[fileName].BlockHashList, ts) {
+				if err := writeBlocks(rMetaMap[fileName], addr, &client); err != nil {
 					log.Panic("error: ", err)
 				}
 			}
-		} else if !isEqual(indexMetaData.BlockHashList, remoteMetaMap[fileName].BlockHashList) {
-			if indexMetaData.Version == remoteMetaMap[fileName].Version+1 {
-				PutfileName, _ := filepath.Abs(ConcatPath(baseDir, fileName))
-				if _, err := os.Stat(PutfileName); err == nil {
-					localHashMap, hashesIn, err_get := getHashFromFile(fileName, int32(blockSize), baseDir)
+		} else if !isEqual(idxMData.BlockHashList, rMetaMap[fileName].BlockHashList) {
+			if idxMData.Version == rMetaMap[fileName].Version+1 {
+				pFile, _ := filepath.Abs(ConcatPath(baseDirectory, fileName))
+				if _, err := os.Stat(pFile); err == nil {
+					localHashMap, hashesIn, err_get := getHash(fileName, int32(blkSz), baseDirectory)
 					if err_get != nil {
 						log.Panic("error", err)
 					}
@@ -134,55 +129,53 @@ func ClientSync(client RPCClient) {
 				}
 
 				newVersion := new(int32)
-				if err := client.UpdateFile(indexMetaData, newVersion); err != nil {
+				if err := client.UpdateFile(idxMData, newVersion); err != nil {
 					fmt.Println(err)
 				}
 
 				if *newVersion == -1 {
-					indexMap[fileName] = remoteMetaMap[fileName]
-
-					if !isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
-						if err := getBlocksAndWriteToFile(remoteMetaMap[fileName], addr, &client); err != nil {
+					idxMap[fileName] = rMetaMap[fileName]
+					if !isEqual(rMetaMap[fileName].BlockHashList, ts) {
+						if err := writeBlocks(rMetaMap[fileName], addr, &client); err != nil {
 							log.Panic("error: ", err)
 						}
-					} else if isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
-						indexMap[fileName] = remoteMetaMap[fileName]
-						delFile, _ := filepath.Abs(ConcatPath(baseDir, fileName))
+					} else if isEqual(rMetaMap[fileName].BlockHashList, ts) {
+						idxMap[fileName] = rMetaMap[fileName]
+						delFile, _ := filepath.Abs(ConcatPath(baseDirectory, fileName))
 						if err := os.Remove(delFile); err != nil {
 							log.Panic("error:", err)
 						}
 					}
 				}
-			} else if remoteMetaMap[fileName].Version+1 > indexMetaData.Version {
-				indexMap[fileName] = remoteMetaMap[fileName]
-
-				if !isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
-					if err := getBlocksAndWriteToFile(remoteMetaMap[fileName], addr, &client); err != nil {
+			} else if rMetaMap[fileName].Version+1 > idxMData.Version {
+				idxMap[fileName] = rMetaMap[fileName]
+				if !isEqual(rMetaMap[fileName].BlockHashList, ts) {
+					if err := writeBlocks(rMetaMap[fileName], addr, &client); err != nil {
 						log.Panic("error: ", err)
 					}
-				} else if isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
-					indexMap[fileName] = remoteMetaMap[fileName]
-					delFile, _ := filepath.Abs(ConcatPath(baseDir, fileName))
+				} else if isEqual(rMetaMap[fileName].BlockHashList, ts) {
+					idxMap[fileName] = rMetaMap[fileName]
+					delFile, _ := filepath.Abs(ConcatPath(baseDirectory, fileName))
 					if err := os.Remove(delFile); err != nil {
 						log.Panic("error:", err)
 					}
 				}
 			}
-		} else if indexMetaData.Version != remoteMetaMap[fileName].Version {
-			indexMap[fileName].Version = remoteMetaMap[fileName].Version
+		} else if idxMData.Version != rMetaMap[fileName].Version {
+			idxMap[fileName].Version = rMetaMap[fileName].Version
 		}
 
 	}
 
-	for fileName := range indexMap {
+	for fileName := range idxMap {
 		if fileName == DEFAULT_META_FILENAME {
 			continue
 		}
-		_, ok := remoteMetaMap[fileName]
+		_, ok := rMetaMap[fileName]
 		if !ok {
-			PutfileName, _ := filepath.Abs(ConcatPath(baseDir, fileName))
-			if _, err := os.Stat(PutfileName); err == nil {
-				localHashMap, hashesIn, err := getHashFromFile(fileName, int32(blockSize), baseDir)
+			pFileName, _ := filepath.Abs(ConcatPath(baseDirectory, fileName))
+			if _, err := os.Stat(pFileName); err == nil {
+				localHashMap, hashesIn, err := getHash(fileName, int32(blkSz), baseDirectory)
 				if err != nil {
 					log.Panic("error", err)
 				}
@@ -199,19 +192,19 @@ func ClientSync(client RPCClient) {
 				}
 			}
 			newVersion := new(int32)
-			if err := client.UpdateFile(indexMap[fileName], newVersion); err != nil {
+			if err := client.UpdateFile(idxMap[fileName], newVersion); err != nil {
 				fmt.Println(err)
 			}
 			if *newVersion == -1 {
-				indexMap[fileName] = remoteMetaMap[fileName]
+				idxMap[fileName] = rMetaMap[fileName]
 
-				if !isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
-					if err := getBlocksAndWriteToFile(remoteMetaMap[fileName], addr, &client); err != nil {
+				if !isEqual(rMetaMap[fileName].BlockHashList, ts) {
+					if err := writeBlocks(rMetaMap[fileName], addr, &client); err != nil {
 						log.Panic("error: ", err)
 					}
-				} else if isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
-					indexMap[fileName] = remoteMetaMap[fileName]
-					delFile, _ := filepath.Abs(ConcatPath(baseDir, fileName))
+				} else if isEqual(rMetaMap[fileName].BlockHashList, ts) {
+					idxMap[fileName] = rMetaMap[fileName]
+					delFile, _ := filepath.Abs(ConcatPath(baseDirectory, fileName))
 					if err := os.Remove(delFile); err != nil {
 						log.Panic("error:", err)
 					}
@@ -222,30 +215,30 @@ func ClientSync(client RPCClient) {
 		}
 	}
 
-	if err := WriteMetaFile(indexMap, baseDir); err != nil {
+	if err := WriteMetaFile(idxMap, baseDirectory); err != nil {
 		log.Panic("error", err)
 	}
 }
 
-func getBlocksAndWriteToFile(remoteMetaData *FileMetaData, blockStoreAddr string, client *RPCClient) error {
-	filename := remoteMetaData.Filename
-	filename, _ = filepath.Abs(ConcatPath(client.BaseDir, filename))
+func writeBlocks(remoteMetaData *FileMetaData, blkAddr string, client *RPCClient) error {
+	name := remoteMetaData.Filename
+	name, _ = filepath.Abs(ConcatPath(client.BaseDir, name))
 
-	fh, err_create := os.Create(filename)
+	fh, err_create := os.Create(name)
 	if err_create != nil {
 		return err_create
 	}
 	defer fh.Close()
 
-	hashList := remoteMetaData.BlockHashList
+	hl := remoteMetaData.BlockHashList
 
-	for _, hashValue := range hashList {
-		blockReturn := &Block{}
-		if err := client.GetBlock(hashValue, blockStoreAddr, blockReturn); err != nil {
+	for _, val := range hl {
+		blkRet := &Block{}
+		if err := client.GetBlock(val, blkAddr, blkRet); err != nil {
 			return err
 		}
 
-		_, err := fh.Write(blockReturn.BlockData)
+		_, err := fh.Write(blkRet.BlockData)
 		if err != nil {
 			return err
 		}
@@ -258,31 +251,30 @@ func isEqual(str1, str2 []string) bool {
 	return s.Join(str1, "") == s.Join(str2, "")
 }
 
-func getHashFromFile(fileName string, blockSize int32, baseDir string) (map[string]*Block, []string, error) {
-	localHashMap := make(map[string]*Block)
-	fileName, _ = filepath.Abs(ConcatPath(baseDir, fileName))
-	fh, err := os.Open(fileName)
+func getHash(name string, blockSize int32, baseDir string) (map[string]*Block, []string, error) {
+	lhm := make(map[string]*Block)
+	name, _ = filepath.Abs(ConcatPath(baseDir, name))
+	fh, err := os.Open(name)
 	if err != nil {
-		log.Printf("Error reading file %v: %v", fileName, err)
+		log.Printf("Error reading file %v: %v", name, err)
 		return nil, nil, err
 	}
 
-	localHashList := make([]string, 0)
+	localList := make([]string, 0)
 
 	for {
-		fileContent := make([]byte, blockSize)
-		readBytes, err := fh.Read(fileContent)
-		fileContent = fileContent[:readBytes]
-		if err != nil || readBytes == 0 {
+		content := make([]byte, blockSize)
+		bytes, err := fh.Read(content)
+		content = content[:bytes]
+		if err != nil || bytes == 0 {
 			break
 		}
-		blockhash := GetBlockHashString(fileContent)
-		localHashList = append(localHashList, blockhash)
-		localHashMap[blockhash] = &Block{
-			BlockData: fileContent,
-			BlockSize: int32(readBytes),
+		blkHash := GetBlockHashString(content)
+		localList = append(localList, blkHash)
+		lhm[blkHash] = &Block{
+			BlockData: content,
+			BlockSize: int32(bytes),
 		}
 	}
-
-	return localHashMap, localHashList, nil
+	return lhm, localList, nil
 }
