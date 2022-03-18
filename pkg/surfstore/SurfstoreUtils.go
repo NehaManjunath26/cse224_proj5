@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
+	s "strings"
 )
 
 // Implement the logic for a client syncing with the server here.
@@ -248,7 +248,7 @@ func writeBlocks(remoteMetaData *FileMetaData, blkAddr string, client *RPCClient
 }
 
 func isEqual(str1, str2 []string) bool {
-	return strings.Join(str1, "") == strings.Join(str2, "")
+	return s.Join(str1, "") == s.Join(str2, "")
 }
 
 func getHash(name string, blockSize int32, baseDir string) (map[string]*Block, []string, error) {
