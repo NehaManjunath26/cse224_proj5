@@ -61,19 +61,19 @@ func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty
 			if int64(i) == s.serverId {
 				continue
 			}
-			input := &AppendEntryInput{
+			appendIp := &AppendEntryInput{
+				Entries:      make([]*UpdateOperation, 0),
+				LeaderCommit: s.commitIndex,
 				Term:         s.term,
 				PrevLogTerm:  -1,
 				PrevLogIndex: -1,
-				Entries:      make([]*UpdateOperation, 0),
-				LeaderCommit: s.commitIndex,
 			}
 			conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 			if err != nil {
 				log.Fatal("Error connecting to clients ", err)
 			}
 			client := NewRaftSurfstoreClient(conn)
-			output, _ := client.AppendEntries(ctx, input)
+			output, _ := client.AppendEntries(ctx, appendIp)
 			if output != nil {
 				c += 1
 			}
