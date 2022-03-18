@@ -19,35 +19,28 @@ func (m *MetaStore) GetFileInfoMap(ctx context.Context, _ *emptypb.Empty) (*File
 }
 
 func (m *MetaStore) UpdateFile(ctx context.Context, fileMetaData *FileMetaData) (*Version, error) {
+	inputVer := fileMetaData.Version
 
-	// check version number
-	incomingVersion := fileMetaData.Version
-
-	remoteFile, ok := m.FileMetaMap[fileMetaData.Filename]
+	file, ok := m.FileMetaMap[fileMetaData.Filename]
 	if ok {
-		currVersion := remoteFile.Version
-		if incomingVersion != currVersion+1 {
-			err := errors.New("file version mismatch")
+		newVer := file.Version
+		if inputVer != newVer+1 {
+			err := errors.New("version mismatch for file")
 			return &Version{Version: -1}, err
 		}
 	} else {
-		if incomingVersion != 1 {
-			return &Version{Version: -1}, fmt.Errorf("version num has to be 1")
+		if inputVer != 1 {
+			return &Version{Version: -1}, fmt.Errorf("version num not 1")
 		}
 	}
-
-	// update the blockHashList
 	m.FileMetaMap[fileMetaData.Filename] = fileMetaData
-
-	// return new version
-	return &Version{Version: incomingVersion}, nil
+	return &Version{Version: inputVer}, nil
 }
 
 func (m *MetaStore) GetBlockStoreAddr(ctx context.Context, _ *emptypb.Empty) (*BlockStoreAddr, error) {
 	return &BlockStoreAddr{Addr: m.BlockStoreAddr}, nil
 }
 
-// This line guarantees all method for MetaStore are implemented
 var _ MetaStoreInterface = new(MetaStore)
 
 func NewMetaStore(blockStoreAddr string) *MetaStore {

@@ -42,8 +42,6 @@ func LoadRaftConfigFile(filename string) (ipList []string) {
 			ipList[index-1] = splitRes[1]
 		}
 	}
-
-	return
 }
 
 func NewRaftServer(id int64, ips []string, blockStoreAddr string) (*RaftSurfstore, error) {
@@ -64,24 +62,23 @@ func NewRaftServer(id int64, ips []string, blockStoreAddr string) (*RaftSurfstor
 		term:           0,
 		metaStore:      NewMetaStore(blockStoreAddr),
 		log:            make([]*UpdateOperation, 0),
-		isCrashed:      false,
-		notCrashedCond: sync.NewCond(&mutexCrashed),
 		isCrashedMutex: &mutexCrashed,
 		isLeaderMutex:  &mutexLeader,
+		isCrashed:      false,
+		notCrashedCond: sync.NewCond(&mutexCrashed),
 	}
 
 	return &server, nil
 }
 
-// TODO Start up the Raft server and any services here
 func ServeRaftServer(server *RaftSurfstore) error {
-	s := grpc.NewServer()
-	RegisterRaftSurfstoreServer(s, server)
+	ser := grpc.NewServer()
+	RegisterRaftSurfstoreServer(ser, server)
 
 	l, e := net.Listen("tcp", server.ip)
 	if e != nil {
 		return e
 	}
 
-	return s.Serve(l)
+	return ser.Serve(l)
 }

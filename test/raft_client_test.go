@@ -28,11 +28,6 @@ func TestSyncTwoClientsSameFileLeaderFailure(t *testing.T) {
 	if err != nil {
 		t.FailNow()
 	}
-	/*
-		TestSyncTwoClientsSameFileLeaderFailure (0.0/3.0)
-		TestSyncTwoClientsFileUpdateLeaderFailure (0.0/3.0)
-		TestRaftRecoverable (0.0/2.0)
-	*/
 
 	err = worker2.AddFile(file2)
 	if err != nil {

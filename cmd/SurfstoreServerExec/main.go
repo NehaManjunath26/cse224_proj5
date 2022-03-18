@@ -14,16 +14,16 @@ import (
 	"google.golang.org/grpc"
 )
 
-const USAGE_STRING = "./run-server.sh -s <service_type> -p <port> -l -d (blockStoreAddr*)"
+const COMMAND_INPUT = "./run-server.sh -s <service_type> -p <port> -l -d (blockStoreAddr*)"
 
-var SERVICE_TYPES = map[string]bool{"meta": true, "block": true, "both": true}
+var SERVICES = map[string]bool{"meta": true, "block": true, "both": true}
 
 const EX_USAGE int = 64
 
 func main() {
 	flag.Usage = func() {
 		w := flag.CommandLine.Output()
-		fmt.Fprintf(w, "Usage of %s:\n", USAGE_STRING)
+		fmt.Fprintf(w, "Usage of %s:\n", COMMAND_INPUT)
 		flag.VisitAll(func(f *flag.Flag) {
 			fmt.Fprintf(w, "  -%s: %v\n", f.Name, f.Usage)
 		})
@@ -42,7 +42,7 @@ func main() {
 		blockStoreAddr = args[0]
 	}
 
-	if _, ok := SERVICE_TYPES[strings.ToLower(*service)]; !ok {
+	if _, ok := SERVICES[strings.ToLower(*service)]; !ok {
 		flag.Usage()
 		os.Exit(EX_USAGE)
 	}
@@ -61,28 +61,20 @@ func main() {
 	log.Fatal(startServer(addr, strings.ToLower(*service), blockStoreAddr))
 }
 
-func startServer(hostAddr string, serviceType string, blockStoreAddr string) error {
-	grpcServer := grpc.NewServer()
-
-	if serviceType == "block" || serviceType == "both" {
-		blockstore := surfstore.NewBlockStore()
-		surfstore.RegisterBlockStoreServer(grpcServer, blockstore)
+func startServer(hostAddr string, service string, blockStoreAddr string) error {
+	srvr := grpc.NewServer()
+	if service == "meta" || service == "both" {
+		surfstore.RegisterMetaStoreServer(srvr, surfstore.NewMetaStore(blockStoreAddr))
 	}
-
-	if serviceType == "meta" || serviceType == "both" {
-		metastore := surfstore.NewMetaStore(blockStoreAddr)
-		surfstore.RegisterMetaStoreServer(grpcServer, metastore)
+	if service == "block" || service == "both" {
+		surfstore.RegisterBlockStoreServer(srvr, surfstore.NewBlockStore())
 	}
-
-	listen, err := net.Listen("tcp", hostAddr)
-
+	ll, err := net.Listen("tcp", hostAddr)
 	if err != nil {
 		return fmt.Errorf("listen failed: %v", err)
 	}
-
-	if err := grpcServer.Serve(listen); err != nil {
+	if err := srvr.Serve(ll); err != nil {
 		return fmt.Errorf("serve failed: %v", err)
 	}
-
 	return nil
 }

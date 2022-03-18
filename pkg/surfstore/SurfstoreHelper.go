@@ -13,7 +13,6 @@ import (
 	"strings"
 )
 
-/* Hash Related */
 func GetBlockHashBytes(blockData []byte) []byte {
 	h := sha256.New()
 	h.Write(blockData)
@@ -25,17 +24,10 @@ func GetBlockHashString(blockData []byte) string {
 	return hex.EncodeToString(blockHash)
 }
 
-/* File Path Related */
 func ConcatPath(baseDir, fileDir string) string {
 	return baseDir + "/" + fileDir
 }
 
-/*
-	Reading and Writing Local Metadata File Related
-*/
-
-// NewFileMetaDataFromConfig returns a FileMetaData struct
-// associated with one line in the local metadata file.
 func NewFileMetaDataFromConfig(configString string) *FileMetaData {
 	configItems := strings.Split(configString, CONFIG_DELIMITER)
 
@@ -50,9 +42,6 @@ func NewFileMetaDataFromConfig(configString string) *FileMetaData {
 	}
 }
 
-// LoadMetaFromMetaFiles loads the local metadata file into a file meta map.
-// The key is the file's name and the value is the file's metadata.
-// You can use this function to load the index.txt file in this project.
 func LoadMetaFromMetaFile(baseDir string) (fileMetaMap map[string]*FileMetaData, e error) {
 	metaFilePath, _ := filepath.Abs(ConcatPath(baseDir, DEFAULT_META_FILENAME))
 
@@ -94,8 +83,6 @@ func LoadMetaFromMetaFile(baseDir string) (fileMetaMap map[string]*FileMetaData,
 	return fileMetaMap, nil
 }
 
-// FileMetaDataToString converts a FileMetaData struct
-// to a string for writing back to local metadata file
 func FileMetaDataToString(fm *FileMetaData) (result string) {
 	result += fm.Filename + ","
 	result += strconv.Itoa(int(fm.Version)) + ","
@@ -108,7 +95,6 @@ func FileMetaDataToString(fm *FileMetaData) (result string) {
 	return
 }
 
-// WriteMetaFile writes the file meta map back to local metadata file
 func WriteMetaFile(fileMetas map[string]*FileMetaData, baseDir string) error {
 	outputMetaPath := ConcatPath(baseDir, DEFAULT_META_FILENAME)
 
@@ -127,12 +113,6 @@ func WriteMetaFile(fileMetas map[string]*FileMetaData, baseDir string) error {
 	return nil
 }
 
-/*
-	Debugging Related
-*/
-
-// PrintMetaMap prints the contents of the metadata map.
-// You might find this function useful for debugging.
 func PrintMetaMap(metaMap map[string]*FileMetaData) {
 
 	fmt.Println("--------BEGIN PRINT MAP--------")
