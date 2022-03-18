@@ -6,10 +6,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	s "strings"
+	"strings"
 )
 
-// Implement the logic for a client syncing with the server here.
 func ClientSync(client RPCClient) {
 	var addr string
 	if err := client.GetBlockStoreAddr(&addr); err != nil {
@@ -104,46 +103,46 @@ func ClientSync(client RPCClient) {
 			idxMap[fileName] = rMetaMap[fileName]
 			if !isEqual(rMetaMap[fileName].BlockHashList, ts) {
 				if err := writeBlocks(rMetaMap[fileName], addr, &client); err != nil {
-					log.Panic("error: ", err)
+					log.Panic("error ", err)
 				}
 			}
 		} else if !isEqual(idxMData.BlockHashList, rMetaMap[fileName].BlockHashList) {
 			if idxMData.Version == rMetaMap[fileName].Version+1 {
 				pFile, _ := filepath.Abs(ConcatPath(baseDirectory, fileName))
 				if _, err := os.Stat(pFile); err == nil {
-					localHashMap, hashesIn, err_get := getHash(fileName, int32(blkSz), baseDirectory)
-					if err_get != nil {
-						log.Panic("error", err)
+					loclHashMp, hIn, getErr := getHash(fileName, int32(blkSz), baseDirectory)
+					if getErr != nil {
+						log.Panic("error ", err)
 					}
-					hashesOut := make([]string, 0)
-					if err := client.HasBlocks(hashesIn, addr, &hashesOut); err != nil {
-						log.Panic("error", err)
+					hOut := make([]string, 0)
+					if err := client.HasBlocks(hIn, addr, &hOut); err != nil {
+						log.Panic("error ", err)
 					}
 
 					succ := new(bool)
-					for _, notHash := range hashesOut {
-						if err := client.PutBlock(localHashMap[notHash], addr, succ); err != nil {
+					for _, notHash := range hOut {
+						if err := client.PutBlock(loclHashMp[notHash], addr, succ); err != nil {
 							log.Panic("error", err)
 						}
 					}
 				}
 
-				newVersion := new(int32)
-				if err := client.UpdateFile(idxMData, newVersion); err != nil {
+				nVers := new(int32)
+				if err := client.UpdateFile(idxMData, nVers); err != nil {
 					fmt.Println(err)
 				}
 
-				if *newVersion == -1 {
+				if *nVers == -1 {
 					idxMap[fileName] = rMetaMap[fileName]
 					if !isEqual(rMetaMap[fileName].BlockHashList, ts) {
 						if err := writeBlocks(rMetaMap[fileName], addr, &client); err != nil {
-							log.Panic("error: ", err)
+							log.Panic("error ", err)
 						}
 					} else if isEqual(rMetaMap[fileName].BlockHashList, ts) {
 						idxMap[fileName] = rMetaMap[fileName]
 						delFile, _ := filepath.Abs(ConcatPath(baseDirectory, fileName))
 						if err := os.Remove(delFile); err != nil {
-							log.Panic("error:", err)
+							log.Panic("error ", err)
 						}
 					}
 				}
@@ -151,13 +150,13 @@ func ClientSync(client RPCClient) {
 				idxMap[fileName] = rMetaMap[fileName]
 				if !isEqual(rMetaMap[fileName].BlockHashList, ts) {
 					if err := writeBlocks(rMetaMap[fileName], addr, &client); err != nil {
-						log.Panic("error: ", err)
+						log.Panic("error ", err)
 					}
 				} else if isEqual(rMetaMap[fileName].BlockHashList, ts) {
 					idxMap[fileName] = rMetaMap[fileName]
 					delFile, _ := filepath.Abs(ConcatPath(baseDirectory, fileName))
 					if err := os.Remove(delFile); err != nil {
-						log.Panic("error:", err)
+						log.Panic("error ", err)
 					}
 				}
 			}
@@ -175,38 +174,38 @@ func ClientSync(client RPCClient) {
 		if !ok {
 			pFileName, _ := filepath.Abs(ConcatPath(baseDirectory, fileName))
 			if _, err := os.Stat(pFileName); err == nil {
-				localHashMap, hashesIn, err := getHash(fileName, int32(blkSz), baseDirectory)
+				localHMap, hashInput, err := getHash(fileName, int32(blkSz), baseDirectory)
 				if err != nil {
-					log.Panic("error", err)
+					log.Panic("error ", err)
 				}
-				hashesPut := make([]string, 0)
-				if err := client.HasBlocks(hashesIn, addr, &hashesPut); err != nil {
-					log.Panic("error", err)
+				putHash := make([]string, 0)
+				if err := client.HasBlocks(hashInput, addr, &putHash); err != nil {
+					log.Panic("error ", err)
 				}
 
 				succ := new(bool)
-				for _, notHash := range hashesPut {
-					if err := client.PutBlock(localHashMap[notHash], addr, succ); err != nil {
-						log.Panic("error", err)
+				for _, notHash := range putHash {
+					if err := client.PutBlock(localHMap[notHash], addr, succ); err != nil {
+						log.Panic("error ", err)
 					}
 				}
 			}
-			newVersion := new(int32)
-			if err := client.UpdateFile(idxMap[fileName], newVersion); err != nil {
+			newVers := new(int32)
+			if err := client.UpdateFile(idxMap[fileName], newVers); err != nil {
 				fmt.Println(err)
 			}
-			if *newVersion == -1 {
+			if *newVers == -1 {
 				idxMap[fileName] = rMetaMap[fileName]
 
 				if !isEqual(rMetaMap[fileName].BlockHashList, ts) {
 					if err := writeBlocks(rMetaMap[fileName], addr, &client); err != nil {
-						log.Panic("error: ", err)
+						log.Panic("error ", err)
 					}
 				} else if isEqual(rMetaMap[fileName].BlockHashList, ts) {
 					idxMap[fileName] = rMetaMap[fileName]
 					delFile, _ := filepath.Abs(ConcatPath(baseDirectory, fileName))
 					if err := os.Remove(delFile); err != nil {
-						log.Panic("error:", err)
+						log.Panic("error ", err)
 					}
 				}
 			}
@@ -248,7 +247,7 @@ func writeBlocks(remoteMetaData *FileMetaData, blkAddr string, client *RPCClient
 }
 
 func isEqual(str1, str2 []string) bool {
-	return s.Join(str1, "") == s.Join(str2, "")
+	return strings.Join(str1, "") == strings.Join(str2, "")
 }
 
 func getHash(name string, blockSize int32, baseDir string) (map[string]*Block, []string, error) {
