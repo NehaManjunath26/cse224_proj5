@@ -19,14 +19,11 @@ type RaftSurfstore struct {
 	term     int64
 	log      []*UpdateOperation
 
-	metaStore *MetaStore
-
 	commitIndex    int64
 	pendingCommits []chan bool
-
-	lastApplied int64
-
-	rpcClients []RaftSurfstoreClient
+	lastApplied    int64
+	metaStore      *MetaStore
+	rpcClients     []RaftSurfstoreClient
 
 	/*-------------- Server state ---------------*/
 	serverId int64
@@ -155,7 +152,7 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 		FileMetaData: filemeta,
 	}
 	s.log = append(s.log, &op)
-	for idx, _ := range s.nextIndex {
+	for idx := range s.nextIndex {
 		s.nextIndex[idx] = int64(len(s.log))
 	}
 
@@ -173,10 +170,120 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 	return nil, nil
 }
 
+func (s *RaftSurfstore) commitEntry(serverIdx, entryIdx int64, commitChan chan *AppendEntryOutput) {
+	for {
+		addr := s.ipList[serverIdx]
+		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return
+		}
+		var prevLogIndex int64 = -1
+		var prevLogTerm int64 = -1
+		entries := make([]*UpdateOperation, 0)
+		client := NewRaftSurfstoreClient(conn)
+
+		if len(s.log) > 0 && int64(len(s.log)) >= s.nextIndex[serverIdx] {
+			if int(s.nextIndex[serverIdx]) > 0 {
+				prevLogTerm = s.log[s.nextIndex[serverIdx]-1].GetTerm()
+				prevLogIndex = s.nextIndex[serverIdx] - 1
+			}
+			entries = s.log[s.nextIndex[serverIdx]:]
+		}
+
+		appendEntryInput := &AppendEntryInput{
+			Term:         s.term,
+			PrevLogTerm:  prevLogTerm,
+			PrevLogIndex: prevLogIndex,
+			Entries:      entries,
+			LeaderCommit: s.commitIndex,
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if s.isCrashed {
+			return
+		}
+
+		appendEntryOutput, _ := client.AppendEntries(ctx, appendEntryInput)
+		if appendEntryOutput == nil || err != nil {
+			if errors.Is(err, ERR_NOT_LEADER) {
+				s.isLeaderMutex.Lock()
+				defer s.isLeaderMutex.Unlock()
+				if s.isLeader {
+					s.isLeader = false
+					s.nextIndex = make([]int64, len(s.ipList))
+				}
+				break
+			} else {
+				continue
+			}
+		}
+
+		for !appendEntryOutput.Success && s.nextIndex[serverIdx] > 0 {
+			s.nextIndex[serverIdx] -= 1
+			if len(s.log) > 0 {
+				prevLogIndex = s.nextIndex[serverIdx] - 1
+				if prevLogIndex >= 0 {
+					prevLogTerm = s.log[prevLogIndex].GetTerm()
+				} else {
+					prevLogTerm = -1
+				}
+				entries = s.log[s.nextIndex[serverIdx]:]
+			}
+			appendEntryInput = &AppendEntryInput{
+				Term:         s.term,
+				PrevLogTerm:  prevLogTerm,
+				PrevLogIndex: prevLogIndex,
+				Entries:      entries,
+				LeaderCommit: s.commitIndex,
+			}
+			if s.isCrashed {
+				return
+			}
+
+			appendEntryOutput, err = client.AppendEntries(ctx, appendEntryInput)
+
+			if appendEntryOutput == nil || err != nil {
+				if errors.Is(err, ERR_NOT_LEADER) {
+					s.isLeaderMutex.Lock()
+					defer s.isLeaderMutex.Unlock()
+					if s.isLeader {
+						s.isLeader = false
+						s.nextIndex = make([]int64, len(s.ipList))
+					}
+				}
+				break
+			}
+		}
+
+		if appendEntryOutput == nil || err != nil {
+			if !errors.Is(err, ERR_NOT_LEADER) {
+				continue
+			} else {
+				s.isLeaderMutex.Lock()
+				defer s.isLeaderMutex.Unlock()
+				if s.isLeader {
+					s.isLeader = false
+					s.nextIndex = make([]int64, len(s.ipList))
+				}
+				break
+			}
+		}
+		if !appendEntryOutput.Success {
+			break
+		}
+		if appendEntryOutput.Success {
+			s.nextIndex[serverIdx] = appendEntryOutput.MatchedIndex + 1
+			commitChan <- appendEntryOutput
+			return
+		}
+	}
+}
+
 func (s *RaftSurfstore) attemptReplication() {
 	newId := s.commitIndex + 1
 	chanel := make(chan *AppendEntryOutput, len(s.ipList))
-	for idx, _ := range s.ipList {
+	for idx := range s.ipList {
 		if int64(idx) == s.serverId {
 			continue
 		}
@@ -193,118 +300,6 @@ func (s *RaftSurfstore) attemptReplication() {
 		if c > len(s.ipList)/2 {
 			s.pendingCommits[newId] <- true
 			s.commitIndex = newId
-			break
-		}
-	}
-}
-
-func (s *RaftSurfstore) commitEntry(serverIdx, entryIdx int64, commitChan chan *AppendEntryOutput) {
-	for {
-		addr := s.ipList[serverIdx]
-		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			return
-		}
-		client := NewRaftSurfstoreClient(conn)
-
-		var prevLogTerm int64 = -1
-		var prevLogIndex int64 = -1
-		entries := make([]*UpdateOperation, 0)
-
-		if len(s.log) > 0 && int64(len(s.log)) >= s.nextIndex[serverIdx] {
-			if int(s.nextIndex[serverIdx]) > 0 {
-				prevLogTerm = s.log[s.nextIndex[serverIdx]-1].GetTerm()
-				prevLogIndex = s.nextIndex[serverIdx] - 1
-			}
-			entries = s.log[s.nextIndex[serverIdx]:]
-		}
-
-		input := &AppendEntryInput{
-			Term:         s.term,
-			PrevLogTerm:  prevLogTerm,
-			PrevLogIndex: prevLogIndex,
-			Entries:      entries,
-			LeaderCommit: s.commitIndex,
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if s.isCrashed {
-			return
-		}
-
-		output, _ := client.AppendEntries(ctx, input)
-		if output == nil || err != nil {
-			if errors.Is(err, ERR_NOT_LEADER) {
-				s.isLeaderMutex.Lock()
-				defer s.isLeaderMutex.Unlock()
-				if s.isLeader {
-					s.isLeader = false
-					s.nextIndex = make([]int64, len(s.ipList))
-				}
-				break
-			} else {
-				continue
-			}
-		}
-
-		for !output.Success && s.nextIndex[serverIdx] > 0 {
-			s.nextIndex[serverIdx] -= 1
-			if len(s.log) > 0 {
-				prevLogIndex = s.nextIndex[serverIdx] - 1
-				if prevLogIndex >= 0 {
-					prevLogTerm = s.log[prevLogIndex].GetTerm()
-				} else {
-					prevLogTerm = -1
-				}
-				entries = s.log[s.nextIndex[serverIdx]:]
-			}
-			input = &AppendEntryInput{
-				Term:         s.term,
-				PrevLogTerm:  prevLogTerm,
-				PrevLogIndex: prevLogIndex,
-				Entries:      entries,
-				LeaderCommit: s.commitIndex,
-			}
-			if s.isCrashed {
-				return
-			}
-
-			output, err = client.AppendEntries(ctx, input)
-
-			if output == nil || err != nil {
-				if errors.Is(err, ERR_NOT_LEADER) {
-					s.isLeaderMutex.Lock()
-					defer s.isLeaderMutex.Unlock()
-					if s.isLeader {
-						s.isLeader = false
-						s.nextIndex = make([]int64, len(s.ipList))
-					}
-				}
-				break
-			}
-		}
-
-		if output == nil || err != nil {
-			if errors.Is(err, ERR_NOT_LEADER) {
-				s.isLeaderMutex.Lock()
-				defer s.isLeaderMutex.Unlock()
-				if s.isLeader {
-					s.isLeader = false
-					s.nextIndex = make([]int64, len(s.ipList))
-				}
-				break
-			} else {
-				continue
-			}
-		}
-		if output.Success {
-			s.nextIndex[serverIdx] = output.MatchedIndex + 1
-			commitChan <- output
-			return
-		}
-
-		if !output.Success {
 			break
 		}
 	}
@@ -371,71 +366,6 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 	appendEntryOutput.MatchedIndex = int64(len(s.log)) - 1
 
 	return appendEntryOutput, nil
-}
-
-// This should set the leader status and any related variables as if the node has just won an election
-func (s *RaftSurfstore) SetLeader(ctx context.Context, _ *emptypb.Empty) (*Success, error) {
-
-	//Check if node has crashed
-	serverState, _ := s.IsCrashed(ctx, &emptypb.Empty{})
-	if serverState.IsCrashed {
-		return &Success{Flag: false}, ERR_SERVER_CRASHED
-	}
-
-	//Initialize leader
-	s.isLeaderMutex.Lock()
-	s.isLeader = true
-	s.isLeaderMutex.Unlock()
-
-	s.term += 1
-
-	s.rpcClients = make([]RaftSurfstoreClient, len(s.ipList))
-
-	for i, ip := range s.ipList {
-		if int64(i) == s.serverId {
-			continue
-		}
-
-		conn, err := grpc.Dial(ip, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			return nil, nil
-		}
-		s.rpcClients[i] = NewRaftSurfstoreClient(conn)
-	}
-
-	for i, _ := range s.nextIndex {
-		s.nextIndex[i] = int64(len(s.log))
-	}
-
-	return &Success{Flag: true}, nil
-}
-
-// Send a 'Heartbeat" (AppendEntries with no log entries) to the other servers
-// Only leaders send heartbeats, if the node is not the leader you can return Success = false
-func (s *RaftSurfstore) SendHeartbeat(ctx context.Context, _ *emptypb.Empty) (*Success, error) {
-	//Check if node has crashed
-	serverState, _ := s.IsCrashed(ctx, &emptypb.Empty{})
-	if serverState.IsCrashed {
-		return nil, ERR_SERVER_CRASHED
-	}
-
-	//Check if node is a leader
-	s.isLeaderMutex.RLock()
-	if !s.isLeader {
-		s.isLeaderMutex.RUnlock()
-		return &Success{Flag: false}, ERR_NOT_LEADER
-	}
-	s.isLeaderMutex.RUnlock()
-
-	for i, _ := range s.ipList {
-		if int64(i) != s.serverId {
-			err := s.appendEntriesRetry(s.rpcClients[i], i)
-			if err != nil {
-				break
-			}
-		}
-	}
-	return &Success{Flag: true}, nil
 }
 
 func (s *RaftSurfstore) appendEntriesRetry(client RaftSurfstoreClient, idx int) error {
@@ -516,6 +446,71 @@ func (s *RaftSurfstore) appendEntriesRetry(client RaftSurfstoreClient, idx int) 
 		s.nextIndex[idx] = output.MatchedIndex + 1
 	}
 	return nil
+}
+
+// This should set the leader status and any related variables as if the node has just won an election
+func (s *RaftSurfstore) SetLeader(ctx context.Context, _ *emptypb.Empty) (*Success, error) {
+
+	//Check if node has crashed
+	serverState, _ := s.IsCrashed(ctx, &emptypb.Empty{})
+	if serverState.IsCrashed {
+		return &Success{Flag: false}, ERR_SERVER_CRASHED
+	}
+
+	//Initialize leader
+	s.isLeaderMutex.Lock()
+	s.isLeader = true
+	s.isLeaderMutex.Unlock()
+
+	s.term += 1
+
+	s.rpcClients = make([]RaftSurfstoreClient, len(s.ipList))
+
+	for i, ip := range s.ipList {
+		if int64(i) == s.serverId {
+			continue
+		}
+
+		conn, err := grpc.Dial(ip, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return nil, nil
+		}
+		s.rpcClients[i] = NewRaftSurfstoreClient(conn)
+	}
+
+	for i := range s.nextIndex {
+		s.nextIndex[i] = int64(len(s.log))
+	}
+
+	return &Success{Flag: true}, nil
+}
+
+// Send a 'Heartbeat" (AppendEntries with no log entries) to the other servers
+// Only leaders send heartbeats, if the node is not the leader you can return Success = false
+func (s *RaftSurfstore) SendHeartbeat(ctx context.Context, _ *emptypb.Empty) (*Success, error) {
+	//Check if node has crashed
+	serverState, _ := s.IsCrashed(ctx, &emptypb.Empty{})
+	if serverState.IsCrashed {
+		return nil, ERR_SERVER_CRASHED
+	}
+
+	//Check if node is a leader
+	s.isLeaderMutex.RLock()
+	if !s.isLeader {
+		s.isLeaderMutex.RUnlock()
+		return &Success{Flag: false}, ERR_NOT_LEADER
+	}
+	s.isLeaderMutex.RUnlock()
+
+	for i := range s.ipList {
+		if int64(i) != s.serverId {
+			err := s.appendEntriesRetry(s.rpcClients[i], i)
+			if err != nil {
+				break
+			}
+		}
+	}
+	return &Success{Flag: true}, nil
 }
 
 func (s *RaftSurfstore) Crash(ctx context.Context, _ *emptypb.Empty) (*Success, error) {

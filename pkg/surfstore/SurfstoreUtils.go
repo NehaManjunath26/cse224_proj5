@@ -16,18 +16,17 @@ func ClientSync(client RPCClient) {
 	if err := client.GetBlockStoreAddr(&addr); err != nil {
 		log.Fatal(err)
 	}
-
-	blockSize := client.BlockSize
 	baseDir := client.BaseDir
+	blockSize := client.BlockSize
 
-	curr_items, err := ioutil.ReadDir(baseDir)
+	current, err := ioutil.ReadDir(baseDir)
 	if err != nil {
 		log.Panic("Error reading directory")
 	}
 
-	localMetaMap := make(map[string][]string)
+	localMap := make(map[string][]string)
 
-	for _, file := range curr_items {
+	for _, file := range current {
 		name := file.Name()
 		if name == DEFAULT_META_FILENAME || file.IsDir() {
 			continue
@@ -50,12 +49,11 @@ func ClientSync(client RPCClient) {
 			blockhash := GetBlockHashString(fileContent)
 			fileHashList = append(fileHashList, blockhash)
 		}
-		localMetaMap[name] = fileHashList
+		localMap[name] = fileHashList
 	}
 
 	metaFilePath, _ := filepath.Abs(ConcatPath(baseDir, DEFAULT_META_FILENAME))
 	if _, err := os.Stat(metaFilePath); err != nil {
-		// if index.txt is not there, create it
 		fh, err := os.Create(metaFilePath)
 		if err != nil {
 			fmt.Println(err)
@@ -64,36 +62,25 @@ func ClientSync(client RPCClient) {
 		}
 	}
 
-	// scan the index file
-	indexMetaMap, err := LoadMetaFromMetaFile(baseDir)
+	indexMap, err := LoadMetaFromMetaFile(baseDir)
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	for fileName, localHashList := range localMetaMap {
-		indexMetaData, ok := indexMetaMap[fileName]
+	for fileName, localHashList := range localMap {
+		indexMetaData, ok := indexMap[fileName]
 		if !ok {
-			// case 3:
-			// there in currrent directory, not there in index
-			// created in current directory, create in index
 			newFileMetaData := &FileMetaData{
 				Filename:      fileName,
 				Version:       1,
 				BlockHashList: localHashList,
 			}
-			indexMetaMap[fileName] = newFileMetaData
+			indexMap[fileName] = newFileMetaData
 		} else {
-			// there in current directory, there in index
-			// check if hashes are same
 			if !isEqual(indexMetaData.BlockHashList, localHashList) {
-				// Case 2:
-				// file modified in local.
-				// update the file in index
-				indexMetaMap[fileName].Version += 1
-				indexMetaMap[fileName].BlockHashList = localHashList
+				indexMap[fileName].Version += 1
+				indexMap[fileName].BlockHashList = localHashList
 			} else {
-				// Case 1:
-				// nothing to do
 				continue
 			}
 		}
@@ -101,17 +88,12 @@ func ClientSync(client RPCClient) {
 
 	tombStone := make([]string, 0)
 	tombStone = append(tombStone, "0")
-	for fileName := range indexMetaMap {
-		// check if file is not in local.
-		_, ok := localMetaMap[fileName]
+	for fileName := range indexMap {
+		_, ok := localMap[fileName]
 		if !ok {
-			// Case 4:
-			// deleted from local
-			indexMetaMap[fileName].BlockHashList = tombStone
-			indexMetaMap[fileName].Version += 1
+			indexMap[fileName].BlockHashList = tombStone
+			indexMap[fileName].Version += 1
 		} else {
-			// Case 5:
-			// already handled above
 			continue
 		}
 	}
@@ -122,9 +104,9 @@ func ClientSync(client RPCClient) {
 	}
 
 	for fileName := range remoteMetaMap {
-		indexMetaData, ok := indexMetaMap[fileName]
+		indexMetaData, ok := indexMap[fileName]
 		if !ok {
-			indexMetaMap[fileName] = remoteMetaMap[fileName]
+			indexMap[fileName] = remoteMetaMap[fileName]
 			if !isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
 				if err := getBlocksAndWriteToFile(remoteMetaMap[fileName], addr, &client); err != nil {
 					log.Panic("error: ", err)
@@ -157,14 +139,14 @@ func ClientSync(client RPCClient) {
 				}
 
 				if *newVersion == -1 {
-					indexMetaMap[fileName] = remoteMetaMap[fileName]
+					indexMap[fileName] = remoteMetaMap[fileName]
 
 					if !isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
 						if err := getBlocksAndWriteToFile(remoteMetaMap[fileName], addr, &client); err != nil {
 							log.Panic("error: ", err)
 						}
 					} else if isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
-						indexMetaMap[fileName] = remoteMetaMap[fileName]
+						indexMap[fileName] = remoteMetaMap[fileName]
 						delFile, _ := filepath.Abs(ConcatPath(baseDir, fileName))
 						if err := os.Remove(delFile); err != nil {
 							log.Panic("error:", err)
@@ -172,14 +154,14 @@ func ClientSync(client RPCClient) {
 					}
 				}
 			} else if remoteMetaMap[fileName].Version+1 > indexMetaData.Version {
-				indexMetaMap[fileName] = remoteMetaMap[fileName]
+				indexMap[fileName] = remoteMetaMap[fileName]
 
 				if !isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
 					if err := getBlocksAndWriteToFile(remoteMetaMap[fileName], addr, &client); err != nil {
 						log.Panic("error: ", err)
 					}
 				} else if isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
-					indexMetaMap[fileName] = remoteMetaMap[fileName]
+					indexMap[fileName] = remoteMetaMap[fileName]
 					delFile, _ := filepath.Abs(ConcatPath(baseDir, fileName))
 					if err := os.Remove(delFile); err != nil {
 						log.Panic("error:", err)
@@ -187,12 +169,12 @@ func ClientSync(client RPCClient) {
 				}
 			}
 		} else if indexMetaData.Version != remoteMetaMap[fileName].Version {
-			indexMetaMap[fileName].Version = remoteMetaMap[fileName].Version
+			indexMap[fileName].Version = remoteMetaMap[fileName].Version
 		}
 
 	}
 
-	for fileName := range indexMetaMap {
+	for fileName := range indexMap {
 		if fileName == DEFAULT_META_FILENAME {
 			continue
 		}
@@ -217,18 +199,18 @@ func ClientSync(client RPCClient) {
 				}
 			}
 			newVersion := new(int32)
-			if err := client.UpdateFile(indexMetaMap[fileName], newVersion); err != nil {
+			if err := client.UpdateFile(indexMap[fileName], newVersion); err != nil {
 				fmt.Println(err)
 			}
 			if *newVersion == -1 {
-				indexMetaMap[fileName] = remoteMetaMap[fileName]
+				indexMap[fileName] = remoteMetaMap[fileName]
 
 				if !isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
 					if err := getBlocksAndWriteToFile(remoteMetaMap[fileName], addr, &client); err != nil {
 						log.Panic("error: ", err)
 					}
 				} else if isEqual(remoteMetaMap[fileName].BlockHashList, tombStone) {
-					indexMetaMap[fileName] = remoteMetaMap[fileName]
+					indexMap[fileName] = remoteMetaMap[fileName]
 					delFile, _ := filepath.Abs(ConcatPath(baseDir, fileName))
 					if err := os.Remove(delFile); err != nil {
 						log.Panic("error:", err)
@@ -240,7 +222,7 @@ func ClientSync(client RPCClient) {
 		}
 	}
 
-	if err := WriteMetaFile(indexMetaMap, baseDir); err != nil {
+	if err := WriteMetaFile(indexMap, baseDir); err != nil {
 		log.Panic("error", err)
 	}
 }
