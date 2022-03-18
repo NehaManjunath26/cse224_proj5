@@ -47,13 +47,11 @@ func LoadRaftConfigFile(filename string) (ipList []string) {
 }
 
 func NewRaftServer(id int64, ips []string, blockStoreAddr string) (*RaftSurfstore, error) {
-	// TODO any initialization you need to do here
 	var mutexCrashed sync.RWMutex
 	var mutexLeader sync.RWMutex
 	nextIndex := make([]int64, len(ips))
 
 	server := RaftSurfstore{
-		// TODO initialize any fields you add here
 		ip:       ips[id],
 		ipList:   ips,
 		serverId: id,

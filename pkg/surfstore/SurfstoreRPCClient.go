@@ -100,19 +100,17 @@ func (surfClient *RPCClient) GetFileInfoMap(serverFileInfoMap *map[string]*FileM
 	for _, addr := range surfClient.MetaStoreAddrs {
 		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
-			// return err
 			continue
 		}
 
 		defer conn.Close()
-		m := NewRaftSurfstoreClient(conn)
+		c := NewRaftSurfstoreClient(conn)
 
-		// perform the call
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 
 		empty := new(emptypb.Empty)
-		FileInfoMap, err := m.GetFileInfoMap(ctx, empty)
+		FileInfoMap, err := c.GetFileInfoMap(ctx, empty)
 
 		if err != nil {
 			conn.Close()
@@ -120,12 +118,11 @@ func (surfClient *RPCClient) GetFileInfoMap(serverFileInfoMap *map[string]*FileM
 		}
 
 		*serverFileInfoMap = FileInfoMap.FileInfoMap
-
 		return conn.Close()
 
 	}
 
-	return errors.New("servers not found")
+	return errors.New("no servers available")
 
 }
 
@@ -137,25 +134,23 @@ func (surfClient *RPCClient) UpdateFile(fileMetaData *FileMetaData, latestVersio
 			continue
 		}
 		defer conn.Close()
-		m := NewRaftSurfstoreClient(conn)
+		c := NewRaftSurfstoreClient(conn)
 
-		// perform the call
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 
-		updatedVersion, err := m.UpdateFile(ctx, fileMetaData)
+		newVersion, err := c.UpdateFile(ctx, fileMetaData)
 
 		if err != nil {
 			conn.Close()
 			continue
 		}
 
-		*latestVersion = updatedVersion.Version
-
+		*latestVersion = newVersion.Version
 		return conn.Close()
 	}
 
-	return errors.New("all servers down")
+	return errors.New("no servers available")
 
 }
 
@@ -168,26 +163,24 @@ func (surfClient *RPCClient) GetBlockStoreAddr(blockStoreAddr *string) error {
 		}
 
 		defer conn.Close()
-		m := NewRaftSurfstoreClient(conn)
+		c := NewRaftSurfstoreClient(conn)
 
-		// perform the call
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 
 		empty := new(emptypb.Empty)
-		addr, err := m.GetBlockStoreAddr(ctx, empty)
+		blkAddr, err := c.GetBlockStoreAddr(ctx, empty)
 
 		if err != nil {
 			conn.Close()
 			continue
 		}
 
-		*blockStoreAddr = addr.Addr
-
+		*blockStoreAddr = blkAddr.Addr
 		return conn.Close()
 	}
 
-	return errors.New("all servers down")
+	return errors.New("no servers available")
 
 }
 
